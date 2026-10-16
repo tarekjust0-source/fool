@@ -26,11 +26,19 @@ CLASSES = (
 
 
 @persistent
-def _save_post(*_args):
+def _save_pre(filepath="", *_args):
     try:
-        storage.migrate_temp_files()
+        storage.prepare_save(filepath if isinstance(filepath, str) else "")
     except Exception as exc:  # noqa: BLE001
         print(redact(f"[AI Texture Studio] could not move texture files next to the .blend: {exc}"))
+
+
+@persistent
+def _save_post(*_args):
+    try:
+        storage.finish_save()
+    except Exception as exc:  # noqa: BLE001
+        print(redact(f"[AI Texture Studio] could not update texture paths: {exc}"))
 
 
 @persistent
@@ -55,6 +63,7 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     props.register_props()
+    bpy.app.handlers.save_pre.append(_save_pre)
     bpy.app.handlers.save_post.append(_save_post)
     bpy.app.handlers.load_post.append(_load_post)
     providers.base.FALLBACK_DECODER = _decoder
@@ -67,7 +76,8 @@ def register():
 def unregister():
     runtime.shutdown()
     providers.base.FALLBACK_DECODER = None
-    for h, fn in ((bpy.app.handlers.save_post, _save_post), (bpy.app.handlers.load_post, _load_post)):
+    for h, fn in ((bpy.app.handlers.save_pre, _save_pre), (bpy.app.handlers.save_post, _save_post),
+                  (bpy.app.handlers.load_post, _load_post)):
         if fn in h:
             h.remove(fn)
     props.unregister_props()

@@ -22,6 +22,17 @@ from . import storage
 
 _state = {"job": None, "handler": None, "on_finish": None, "last": None}
 _main_calls: "queue.Queue" = queue.Queue()
+LAST_ARGS: dict = {}   # operator arguments of the last generate/refine, for Retry
+
+
+def push_undo_step(message: str):
+    """Make a finished job one Ctrl+Z step (no-op where unsupported)."""
+    if bpy.app.background:
+        return
+    try:
+        bpy.ops.ed.undo_push(message=message)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def call_on_main(fn, *args, timeout: float = 60.0):
@@ -55,6 +66,16 @@ def _service_main_calls():
         done.set()
 
 
+def preview_pixels(rgb, alpha, gutter: int = 8):
+    """Display-ready base colour (worker thread): padded islands, no black."""
+    from ..core import imageio, masks
+    valid = alpha > 0.02
+    col, v = masks.fill_gutter(rgb, valid, gutter)
+    if v.any() and not v.all():
+        col[~v] = col[v].mean(axis=0)
+    return imageio.to_uint8(col)
+
+
 class BridgeJob(jobs.Job):
     """Job whose emitted layers/debug images are written to disk in the worker."""
 
@@ -67,6 +88,10 @@ class BridgeJob(jobs.Job):
                 storage.write_png(path, payload["layer"], level=4)
                 payload["layer_path"] = path
                 self.context["written"].append(path)
+            rgb = payload.pop("state_rgb", None)
+            alpha = payload.pop("state_alpha", None)
+            if rgb is not None and alpha is not None:
+                payload["preview"] = preview_pixels(rgb, alpha)
             dbg = payload.pop("debug", None)
             if dbg and out_dir and self.context.get("keep_debug", True):
                 ddir = os.path.join(out_dir, "views", f"{self.id}_{payload.get('view') or kind}")

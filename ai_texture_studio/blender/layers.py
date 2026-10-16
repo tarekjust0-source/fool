@@ -286,6 +286,19 @@ def recomposite(obj, *, save: bool = True, palette=None) -> bpy.types.Image | No
     return img
 
 
+def write_preview(obj, rgb_u8: np.ndarray) -> bpy.types.Image:
+    """Fast path during generation: show a worker-computed composite."""
+    st = obj.ats
+    size = rgb_u8.shape[0]
+    img = st.base_image
+    if img is None or img.name not in bpy.data.images:
+        img = storage.get_or_create_image(base_image_name(obj), size)
+        img["ats_map"] = "BASE_COLOR"
+        st.base_image = img
+    compat.array_to_image(img, rgb_u8)
+    return img
+
+
 def schedule_recomposite(obj, delay: float = 0.15):
     """Debounced recomposite (property sliders fire many updates)."""
     name = obj.name

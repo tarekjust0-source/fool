@@ -407,3 +407,30 @@ def test_mesh_analysis():
     m.tri_uvs = m.tri_uvs * 2.0
     rep = meshdata.analyze(m)
     assert any("outside 0-1" in t for _, t in rep.messages)
+
+
+def test_flipped_normals_are_reoriented_and_textured():
+    m = cube()
+    m.tris = m.tris[:, ::-1].copy()          # reverse winding -> normals point inwards
+    m.tri_uvs = m.tri_uvs[:, ::-1].copy()
+    m.tri_normals = meshdata.compute_face_normals(m.positions, m.tris)
+    m.corner_normals = np.repeat(m.tri_normals[:, None], 3, axis=1)
+    assert meshdata.normals_inverted(m)
+    assert meshdata.orient_normals(m) and m.normals_flipped
+    assert any("flipped" in t for _, t in meshdata.analyze(m).messages)
+    st, summ, _ = _run(m, ["FRONT", "RIGHT", "LEFT", "BACK", "TOP", "BOTTOM"])
+    assert summ["unseen_fraction"] < 0.02
+
+
+def test_thin_two_sided_object_keeps_front_and_back_separate():
+    """A thin shield (3 mm thick, 1 m wide): front and back must not bleed into each other."""
+    shield = cube(1.0)
+    shield.positions = shield.positions * np.array([1.0, 0.003, 1.0])
+    st, summ, ev = _run(shield, ["FRONT", "BACK"], size=256, view=256)
+    views = {p["label"]: p["layer"] for k, p in ev if k == "view_done"}
+    assert set(views) == {"Front", "Back"}
+    # cube() puts the front (-Y) face in UV cell 0 and the back (+Y) face in cell 1
+    front_cell = (slice(140, 240), slice(10, 75))
+    back_cell = (slice(140, 240), slice(95, 160))
+    assert views["Front"][front_cell][..., 3].mean() > 200 and views["Front"][back_cell][..., 3].mean() < 5
+    assert views["Back"][back_cell][..., 3].mean() > 200

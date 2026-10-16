@@ -105,6 +105,7 @@ def run_multiview(job: Job, mesh: MeshData, cameras: list[ViewCamera], state: Te
         state.apply_layer(layer)
         job.emit("view_done", {
             "object": object_name, "view": cam.name, "label": label, "camera": cam.to_dict(),
+            "state_rgb": state.rgb, "state_alpha": state.alpha,
             "layer": imageio.to_uint8(layer), "stats": stats, "align": info, "purpose": purpose,
             "prompt": cp.as_dict(), "provider": provider.id, "model": result.model, "seed": result.seed,
             "debug": {
@@ -120,7 +121,11 @@ def run_multiview(job: Job, mesh: MeshData, cameras: list[ViewCamera], state: Te
     fill, fstats = finalize_fill(state, ps)
     summary.update(fstats)
     if fill is not None:
-        job.emit("fill_done", {"object": object_name, "layer": imageio.to_uint8(fill), "stats": fstats})
+        # The fill sits *below* the generated layers, so only untextured texels change.
+        state.rgb = state.rgb * state.alpha[..., None] + fill[..., :3] * (1 - state.alpha[..., None])
+        state.alpha = np.maximum(state.alpha, fill[..., 3])
+        job.emit("fill_done", {"object": object_name, "layer": imageio.to_uint8(fill), "stats": fstats,
+                               "state_rgb": state.rgb, "state_alpha": state.alpha})
     summary["textured_fraction"] = state.textured_fraction()
     return summary
 

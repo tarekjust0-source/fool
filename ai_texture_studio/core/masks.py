@@ -84,34 +84,52 @@ def feather(mask: np.ndarray, radius: int) -> np.ndarray:
     return np.clip(box_blur(box_blur(f, r), r), 0.0, 1.0)
 
 
+def _dilate8(m: np.ndarray) -> np.ndarray:
+    g = m.copy()
+    g[1:] |= m[:-1]
+    g[:-1] |= m[1:]
+    g[:, 1:] |= m[:, :-1]
+    g[:, :-1] |= m[:, 1:]
+    g[1:, 1:] |= m[:-1, :-1]
+    g[1:, :-1] |= m[:-1, 1:]
+    g[:-1, 1:] |= m[1:, :-1]
+    g[:-1, :-1] |= m[1:, 1:]
+    return g
+
+
 def fill_gutter(color: np.ndarray, valid: np.ndarray, iterations: int) -> tuple[np.ndarray, np.ndarray]:
     """Grow colours outward from ``valid`` pixels by averaging neighbours.
 
     Standard texture "edge padding" so mip-maps and bilinear filtering do not
-    pull in background colour at UV island borders.  Returns (color, valid).
+    pull in background colour at UV island borders.  Each step only touches
+    the one-pixel frontier around the valid region, so cost scales with the
+    island perimeter rather than the texture area.  Returns (color, valid).
     """
     col = color.astype(np.float32).copy()
-    v = valid.astype(bool).copy()
-    if col.ndim == 2:
+    squeeze = col.ndim == 2
+    if squeeze:
         col = col[:, :, None]
-        squeeze = True
-    else:
-        squeeze = False
+    v = valid.astype(bool).copy()
+    H, W = v.shape
     for _ in range(max(0, int(iterations))):
-        if v.all():
+        front = _dilate8(v) & ~v
+        idx = np.flatnonzero(front)
+        if idx.size == 0:
             break
-        acc = np.zeros_like(col)
-        cnt = np.zeros(v.shape, np.float32)
-        vf = v.astype(np.float32)
+        ys, xs = np.divmod(idx, W)
+        acc = np.zeros((idx.size, col.shape[2]), np.float32)
+        cnt = np.zeros(idx.size, np.float32)
         for dy, dx in _N8:
-            sv = _shift(vf, dy, dx, 0.0)
-            acc += _shift(col * vf[:, :, None], dy, dx, 0.0)
-            cnt += sv
-        new = (~v) & (cnt > 0)
-        if not new.any():
-            break
-        col[new] = acc[new] / cnt[new][:, None]
-        v = v | new
+            yy = ys + dy
+            xx = xs + dx
+            inside = (yy >= 0) & (yy < H) & (xx >= 0) & (xx < W)
+            yy = np.clip(yy, 0, H - 1)
+            xx = np.clip(xx, 0, W - 1)
+            nv = v[yy, xx] & inside
+            acc += col[yy, xx] * nv[:, None]
+            cnt += nv
+        col[ys, xs] = acc / np.maximum(cnt, 1.0)[:, None]
+        v[ys, xs] = True
     if squeeze:
         col = col[:, :, 0]
     return col, v

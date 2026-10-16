@@ -135,45 +135,77 @@ def decode_with_blender(data: bytes) -> np.ndarray:
             pass
 
 
-def migrate_temp_files():
-    """After the first save, move session files next to the .blend."""
-    if not bpy.data.is_saved:
-        return
+def prepare_save(target_blend: str) -> int:
+    """``save_pre``: make every add-on path valid for the file being written.
+
+    * files still in the session temp folder are copied to
+      ``<blend dir>/ATS_textures/<object>/``;
+    * add-on path properties (which Blender does not remap itself) are stored
+      relative to the *new* .blend location, so "Save As" elsewhere works;
+    * images are given absolute paths here and made relative in ``finish_save``
+      (Blender's own relative-remap only rebases paths that are already relative).
+    """
+    if not target_blend:
+        return 0
+    new_dir = os.path.dirname(os.path.abspath(target_blend))
+
+    def new_rel(path_abs: str) -> str:
+        try:
+            return "//" + os.path.relpath(path_abs, new_dir).replace(os.sep, "/")
+        except ValueError:  # other drive (Windows)
+            return path_abs
+
     moved = 0
     for obj in bpy.data.objects:
         st = getattr(obj, "ats", None)
         if st is None or not st.uid:
             continue
-        paths = [ly for ly in st.layers]
-        if not any(is_temp(ly.filepath) for ly in paths) and not any(is_temp(h.filepath) for h in st.history):
-            continue
-        dest = object_dir(obj)
+        dest = os.path.join(new_dir, "ATS_textures", f"{safe_name(obj.name)}_{st.uid}")
+
+        def relocate(src_abs: str) -> str:
+            nonlocal moved
+            if not is_temp(src_abs) or not os.path.exists(src_abs):
+                return src_abs
+            os.makedirs(dest, exist_ok=True)
+            dst = os.path.join(dest, os.path.basename(src_abs))
+            if not os.path.exists(dst):
+                shutil.copy2(src_abs, dst)
+            moved += 1
+            return dst
+
         for item in list(st.layers) + list(st.history):
-            if item.filepath and is_temp(item.filepath):
-                src = resolve(item.filepath)
-                if os.path.exists(src):
-                    dst = os.path.join(dest, os.path.basename(src))
-                    if not os.path.exists(dst):
-                        shutil.copy2(src, dst)
-                    item.filepath = to_stored(dst)
-                    moved += 1
-        for img in (st.base_image, st.mask_image):
+            if item.filepath:
+                item.filepath = new_rel(relocate(os.path.abspath(resolve(item.filepath))))
+        imgs = [st.base_image, st.mask_image]
+        imgs += [bpy.data.images.get(n) for n in _json_values(st.maps)]
+        for img in imgs:
             if img is not None and img.filepath_raw and is_temp(img.filepath_raw):
-                src = resolve(img.filepath_raw)
-                if os.path.exists(src):
-                    dst = os.path.join(dest, os.path.basename(src))
-                    shutil.copy2(src, dst)
-                    img.filepath_raw = to_stored(dst)
-    for img in bpy.data.images:
-        if img.get("ats_map") and img.filepath_raw and is_temp(img.filepath_raw):
-            src = resolve(img.filepath_raw)
-            if os.path.exists(src):
-                obj_dir = os.path.join(root_dir(), "maps")
-                os.makedirs(obj_dir, exist_ok=True)
-                dst = os.path.join(obj_dir, os.path.basename(src))
-                shutil.copy2(src, dst)
-                img.filepath_raw = to_stored(dst)
+                img.filepath_raw = relocate(os.path.abspath(resolve(img.filepath_raw)))
     return moved
+
+
+def finish_save():
+    """``save_post``: store add-on image paths relative to the saved .blend."""
+    if not bpy.data.is_saved:
+        return
+    base = os.path.dirname(bpy.data.filepath)
+    for img in bpy.data.images:
+        p = img.filepath_raw
+        if p and not p.startswith("//") and (img.get("ats_map") or img.name.startswith("ATS_")):
+            ap = os.path.abspath(p)
+            if ap.startswith(os.path.join(base, "ATS_textures")):
+                try:
+                    img.filepath_raw = bpy.path.relpath(ap)
+                except ValueError:
+                    pass
+
+
+def _json_values(s: str):
+    import json
+    try:
+        return list(json.loads(s or "{}").values())
+    except ValueError:
+        return []
 
 
 def save_image_datablock(img: bpy.types.Image, path: str):

@@ -103,6 +103,9 @@ def texel_visibility(cam: ViewCamera, geo: Geometry, P: np.ndarray, N: np.ndarra
     facing = np.einsum("ij,ij->i", N, cam.dir_to_camera(P))
     # Slope-scaled tolerance: grazing surfaces have larger depth error.
     tol = depth_tol * (1.0 + 2.0 * (1.0 - np.clip(facing, 0, 1)))
+    # Back faces are culled so thin two-sided objects (shields, capes) keep
+    # separate front/back paint; globally flipped meshes are re-oriented by
+    # meshdata.orient_normals() before this runs.
     vis = inside & on_object & (facing > 0.0) & (vdepth <= zb + tol)
     return vis, x, y
 
@@ -141,6 +144,7 @@ def render_view(mesh: MeshData, cam: ViewCamera, tex_rgb: np.ndarray | None, tex
         up = cam.view[1, :3]
         light = -fwd * 0.75 - right * 0.35 + up * 0.55
         light /= np.linalg.norm(light)
+        n = n * np.where((n @ -fwd) < 0, -1.0, 1.0)[:, None].astype(np.float32)  # face the camera
         lam = np.clip(n @ light, 0.0, 1.0)
         shade = (0.32 + 0.68 * lam).astype(np.float32)
         shading[m] = shade

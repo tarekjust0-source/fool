@@ -5,7 +5,7 @@ from __future__ import annotations
 import bpy
 import numpy as np
 
-from ..core.meshdata import MeshData, compute_face_normals
+from ..core.meshdata import MeshData, compute_face_normals, orient_normals
 from . import compat
 
 
@@ -77,10 +77,12 @@ def extract(obj, context=None, *, uv_name: str | None = None, use_modifiers: boo
         if np.linalg.det(M[:3, :3]) < 0:  # mirrored object: winding flips
             fn = -fn
         R = M[:3, :3] / np.maximum(np.linalg.norm(M[:3, :3], axis=0, keepdims=True), 1e-12)
-        return MeshData(name=obj.name, positions=pos, tris=tris, tri_uvs=tri_uvs.astype(np.float32),
+        data = MeshData(name=obj.name, positions=pos, tris=tris, tri_uvs=tri_uvs.astype(np.float32),
                         tri_normals=fn.astype(np.float32), corner_normals=cn.reshape(-1, 3, 3).astype(np.float32),
                         tri_material=mat, tri_selected=psel[poly] if len(psel) else np.zeros(T, bool),
                         basis=R, uv_name=uv_name, extra_uvs=extra)
+        orient_normals(data)
+        return data
     finally:
         src.to_mesh_clear()
 

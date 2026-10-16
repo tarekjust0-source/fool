@@ -406,6 +406,9 @@ class ATS_PT_layers(_Base, bpy.types.Panel):
         row = layout.row(align=True)
         row.operator("ats.recomposite", icon="FILE_REFRESH")
         row.prop(st, "gutter")
+        row = layout.row(align=True)
+        row.operator("ats.layers_resize", icon="FULLSCREEN_ENTER")
+        row.operator("ats.cleanup_files", icon="TRASH")
 
 
 class ATS_PT_history(_Base, bpy.types.Panel):
@@ -505,6 +508,43 @@ class ATS_PT_export(_Base, bpy.types.Panel):
             row.operator("ats.restore_materials", icon="LOOP_BACK")
 
 
+class ATS_PT_provider(_Base, bpy.types.Panel):
+    bl_label = "AI Provider"
+    bl_parent_id = "ATS_PT_main"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        p = prefs.get_prefs(context)
+        layout.prop(p, "provider", text="")
+        try:
+            prov = providers.get(p.provider)
+        except providers.ProviderError as exc:
+            layout.label(text=str(exc), icon="ERROR")
+            return
+        s = p.settings_for(prov.id)
+        if prov.id != "MOCK":
+            layout.prop(s, "model")
+        if prov.requires_key or prov.id == "COMFYUI":
+            row = layout.row(align=True)
+            row.label(text=credentials.key_status(prov.id, s)[:48], icon="LOCKED")
+            if s.key_mode in ("SESSION", "KEYRING"):
+                row.operator("ats.set_api_key", text="", icon="KEY_HLT").provider = prov.id
+        caps = prov.capabilities(prefs.provider_config(context, prov.id)[1]) if prov.id == "COMFYUI" else \
+            prov.capabilities(providers.ProviderConfig())
+        col = layout.column(align=True)
+        b = providers.base
+        col.label(text="Supports: " + ", ".join(n for flag, n in (
+            (b.MASK, "true inpainting"), (b.SOFT_MASK, "guided edits"), (b.REFERENCE, "reference images"),
+            (b.NEGATIVE_PROMPT, "negative prompt"), (b.SEED, "seed"), (b.DEPTH_CONTROL, "depth control"))
+            if flag in caps))
+        for line in prefs._wrap(prov.data_notice, 46):
+            col.label(text=line)
+        row = layout.row(align=True)
+        row.operator("ats.test_connection", icon="URL").provider = prov.id
+        row.operator("ats.open_prefs", text="All Settings", icon="PREFERENCES")
+
+
 CLASSES = (ATS_UL_views, ATS_UL_layers, ATS_UL_history, ATS_UL_prompts, ATS_PT_main, ATS_PT_prompt, ATS_PT_style,
            ATS_PT_generate, ATS_PT_multiview, ATS_PT_refine, ATS_PT_layers, ATS_PT_history, ATS_PT_pbr,
-           ATS_PT_export)
+           ATS_PT_export, ATS_PT_provider)

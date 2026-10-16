@@ -27,6 +27,7 @@ class MeshData:
     basis: np.ndarray = field(default_factory=lambda: np.eye(3))  # object rotation (3x3)
     uv_name: str = ""
     extra_uvs: dict = field(default_factory=dict)   # name -> (T,3,2)
+    normals_flipped: bool = False                   # snapshot was re-oriented (scene untouched)
 
     @property
     def tri_count(self) -> int:
@@ -65,6 +66,32 @@ def triangle_areas(points: np.ndarray) -> np.ndarray:
     if points.shape[2] == 2:
         return 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
     return 0.5 * np.linalg.norm(np.cross(a, b), axis=1)
+
+
+def signed_volume(mesh: MeshData) -> float:
+    p = mesh.tri_positions()
+    c = p.reshape(-1, 3).mean(axis=0)
+    p0, p1, p2 = p[:, 0] - c, p[:, 1] - c, p[:, 2] - c
+    return float(np.einsum("ij,ij->i", p0, np.cross(p1, p2)).sum() / 6.0)
+
+
+def normals_inverted(mesh: MeshData) -> bool:
+    """True when face normals predominantly point inwards (closed-ish meshes)."""
+    if mesh.tri_count == 0:
+        return False
+    lo, hi = mesh.bounds()
+    bbox_volume = float(np.prod(np.maximum(hi - lo, 1e-9)))
+    return signed_volume(mesh) < -0.05 * bbox_volume
+
+
+def orient_normals(mesh: MeshData) -> bool:
+    """Flip all normals of a globally inverted mesh (snapshot only, scene untouched)."""
+    if normals_inverted(mesh):
+        mesh.tri_normals = -mesh.tri_normals
+        mesh.corner_normals = -mesh.corner_normals
+        mesh.normals_flipped = True
+        return True
+    return False
 
 
 def uv_islands(mesh: MeshData) -> np.ndarray:
@@ -144,6 +171,9 @@ def analyze(mesh: MeshData, *, check_islands: bool = True) -> AnalysisReport:
     if rep.surface_area <= 1e-12:
         rep.add("ERROR", "Mesh surface area is zero.")
         return rep
+    if mesh.normals_flipped or normals_inverted(mesh):
+        rep.add("WARNING", "Normals appear to point inwards (flipped). Texturing compensates, but fix them "
+                           "(Mesh > Normals > Recalculate Outside) before exporting to a game engine.")
     if rep.tri_count > 1_500_000:
         rep.add("WARNING", f"{rep.tri_count:,} triangles: projection will be slow and memory-heavy. "
                            "Consider a decimated copy for texturing.")

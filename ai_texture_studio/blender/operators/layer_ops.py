@@ -280,6 +280,75 @@ class ATS_OT_history_clear(bpy.types.Operator):
         return {"FINISHED"}
 
 
-CLASSES = (ATS_OT_layer_op, ATS_OT_layers_undo, ATS_OT_layer_import_existing, ATS_OT_layer_add_paint,
+class ATS_OT_layers_resize(_LayerOp, bpy.types.Operator):
+    """Resample every layer to the texture resolution chosen in Style & Resolution (undoable)"""
+
+    bl_idname = "ats.layers_resize"
+    bl_label = "Apply Resolution"
+
+    def execute(self, context):
+        obj = active_mesh(context)
+        st = obj.ats
+        new = int(context.scene.ats.texture_size)
+        if new == st.texture_size:
+            self.report({"INFO"}, f"Layers are already {new}px")
+            return {"CANCELLED"}
+        layers.push_undo(obj, f"Resize to {new}")
+        for ly in st.layers:
+            px = storage.read_png(ly.filepath)
+            path = os.path.join(storage.object_dir(obj), f"layer_{ly.uid}_{new}.png")
+            storage.write_png(path, imageio.resize(px, new, new))
+            ly.filepath = storage.to_stored(path)
+        st.texture_size = new
+        layers.recomposite(obj, save=True)
+        services.apply_material(obj, context.scene.ats)
+        self.report({"INFO"}, f"Resampled {len(st.layers)} layer(s) to {new}px")
+        return {"FINISHED"}
+
+
+class ATS_OT_cleanup_files(bpy.types.Operator):
+    """Delete layer/debug files of this object that no layer, history entry or undo step uses"""
+
+    bl_idname = "ats.cleanup_files"
+    bl_label = "Clean Up Files"
+
+    @classmethod
+    def poll(cls, context):
+        return active_mesh(context) is not None and bool(active_mesh(context).ats.uid)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        import json
+        import shutil
+        obj = active_mesh(context)
+        st = obj.ats
+        d = storage.object_dir(obj)
+        keep = {os.path.abspath(storage.resolve(x.filepath)) for x in list(st.layers) + list(st.history) if x.filepath}
+        for stack in (st.undo_stack, st.redo_stack):
+            for entry in json.loads(stack or "[]"):
+                for ly in entry.get("layers", []):
+                    keep.add(os.path.abspath(storage.resolve(ly.get("filepath", ""))))
+        for img in bpy.data.images:
+            if img.filepath_raw:
+                keep.add(os.path.abspath(storage.resolve(img.filepath_raw)))
+        removed = 0
+        for name in os.listdir(d):
+            full = os.path.abspath(os.path.join(d, name))
+            if name == "views":
+                shutil.rmtree(full, ignore_errors=True)
+                removed += 1
+            elif name.endswith(".png") and full not in keep:
+                os.remove(full)
+                removed += 1
+        for v in context.scene.ats.views:
+            if v.debug_object == obj.name:
+                v.debug_dir = ""
+        self.report({"INFO"}, f"Removed {removed} unused file(s)/folder(s)")
+        return {"FINISHED"}
+
+
+CLASSES = (ATS_OT_layers_resize, ATS_OT_cleanup_files, ATS_OT_layer_op, ATS_OT_layers_undo, ATS_OT_layer_import_existing, ATS_OT_layer_add_paint,
            ATS_OT_layer_edit, ATS_OT_layer_apply_edits, ATS_OT_recomposite, ATS_OT_history_restore,
            ATS_OT_history_clear)

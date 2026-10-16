@@ -550,6 +550,18 @@ def test_save_reload_and_layer_files():
     bpy.ops.wm.open_mainfile(filepath=path)
     obj = bpy.data.objects["Persist"]
     assert len(obj.ats.layers) == n_layers
+    # paths stored *in the file* must be relative to it (not the session temp folder)
+    for ly in obj.ats.layers:
+        assert ly.filepath.startswith("//ATS_textures"), ly.filepath
+    # Save As into another folder: paths are remapped, files stay reachable
+    d2 = tempfile.mkdtemp()
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(d2, "moved.blend"))
+    bpy.ops.wm.open_mainfile(filepath=os.path.join(d2, "moved.blend"))
+    obj = bpy.data.objects["Persist"]
+    for ly in obj.ats.layers:
+        assert ly.filepath.startswith("//"), ly.filepath
+        assert os.path.exists(bpy.path.abspath(ly.filepath)), ly.filepath
+    assert obj.ats.base_image.size[0] == 512
     img = obj.material_slots[0].material.node_tree.nodes["ATS Base Color"].image
     assert img.size[0] == 512 and img.has_data or img.size[0] == 512
     rgb, a = layers_mod.current_texture(obj, 512)
@@ -760,3 +772,24 @@ def test_uv_transfer_to_other_map():
     sc.transfer_uv = "Game"
     assert bpy.ops.ats.transfer_uv() == {"FINISHED"}
     assert bpy.data.images.get("ATS_Transfer_BaseColor_Game") is not None
+
+
+def test_resize_layers_and_cleanup_files():
+    obj = add_cube("Resize")
+    generate(obj)
+    sc = bpy.context.scene.ats
+    sc.texture_size = "1024"
+    make_active(obj)
+    assert bpy.ops.ats.layers_resize() == {"FINISHED"}
+    assert obj.ats.texture_size == 1024 and obj.ats.base_image.size[0] == 1024
+    for ly in obj.ats.layers:
+        assert layers_mod.layer_pixels(obj, ly, 1024).shape[0] == 1024
+    assert bpy.ops.ats.layers_undo() == {"FINISHED"}   # stack restored to the 512px files
+    d = __import__(f"{MOD}.blender.storage", fromlist=["x"]).object_dir(obj)
+    before = set(os.listdir(d))
+    assert bpy.ops.ats.cleanup_files() == {"FINISHED"}
+    after = set(os.listdir(d))
+    assert "views" not in after
+    for ly in obj.ats.layers:                      # nothing referenced was deleted
+        assert os.path.exists(bpy.path.abspath(ly.filepath))
+    assert len(after) <= len(before)

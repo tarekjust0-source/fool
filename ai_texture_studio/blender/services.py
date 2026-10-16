@@ -400,8 +400,15 @@ def _on_generation_event(job, kind, payload):
             v.status = f"done ({payload['stats'].get('claimed_fraction', 0):.0%} of surface)"
             v.debug_dir = storage.to_stored(payload.get("debug_dir", "")) if payload.get("debug_dir") else ""
             v.debug_object = obj.name
-    layers.recomposite(obj, save=False)
-    apply_material(obj, sc)
+    preview = payload.get("preview")
+    if preview is not None and preview.shape[0] == obj.ats.texture_size:
+        layers.write_preview(obj, preview)   # cheap: final recomposite runs when the job ends
+    else:
+        layers.recomposite(obj, save=False)
+    wired = job.context.setdefault("materials_done", set())
+    if key not in wired:   # wire materials once per object; later events only update pixels
+        apply_material(obj, sc)
+        wired.add(key)
 
 
 def _on_generation_finished(job):
@@ -422,6 +429,8 @@ def _on_generation_finished(job):
         if obj.ats.layers:
             layers.recomposite(obj, save=True)
             apply_material(obj, sc)
+    if job.context.get("first_layer_done"):
+        runtime.push_undo_step("AI Texture Studio: Generate")
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +544,8 @@ def _on_refine_finished(job):
             continue
         if job.status != "DONE":
             update_history(obj, hist_uid, status=job.status, detail=job.error or job.message)
+    if job.context.get("pending_uid"):
+        runtime.push_undo_step("AI Texture Studio: Correction")
 
 
 def resolve_pending(obj, accept: bool) -> bool:

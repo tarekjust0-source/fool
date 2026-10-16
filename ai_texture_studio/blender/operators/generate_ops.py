@@ -61,6 +61,7 @@ class ATS_OT_generate(bpy.types.Operator):
             self.report({"ERROR"}, "Select a mesh object")
             return {"CANCELLED"}
         only = self.only_view if self.only_view >= 0 else None
+        runtime.LAST_ARGS["generate"] = {"all_selected": self.all_selected, "only_view": self.only_view}
         job = run_safely(self, services.start_generation, context, objs, only_view=only)
         if job is None:
             return {"CANCELLED"}
@@ -100,8 +101,8 @@ class ATS_OT_retry(bpy.types.Operator):
     def execute(self, context):
         j = runtime.last_job()
         if j.kind == "refine":
-            return bpy.ops.ats.refine()
-        return bpy.ops.ats.generate("INVOKE_DEFAULT")
+            return bpy.ops.ats.refine("INVOKE_DEFAULT")
+        return bpy.ops.ats.generate("INVOKE_DEFAULT", **runtime.LAST_ARGS.get("generate", {}))
 
 
 class ATS_OT_preview_prompt(bpy.types.Operator):
