@@ -1,0 +1,27 @@
+schema_version = "1.0.0"
+
+id = "ai_texture_studio"
+version = "1.0.0"
+name = "AI Texture Studio"
+tagline = "AI multi-view texturing, local refinement and layers for meshes"
+maintainer = "AI Texture Studio contributors"
+type = "add-on"
+
+website = "https://github.com/tarekjust0-source/fool"
+
+tags = ["Material", "Paint", "UV"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+network = "Send renders, masks and prompts to your chosen AI provider"
+files = "Save generated textures, layers and exported models"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+  ".*",
+]
