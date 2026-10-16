@@ -6,10 +6,10 @@ Inspired by the texturing workflow of Modddif (multi-view generation, reference 
 
 - **Blender:** 4.2 LTS or newer (extension format). Automated tests run on **4.2.23 LTS** and **5.0.1**.
 - **Dependencies:** none beyond Blender's bundled Python and numpy. `keyring` is optional, for OS credential storage.
-- **AI providers:** OpenAI GPT Image, Stability AI, Google Gemini image models, or **ComfyUI** (local or self-hosted; nothing leaves your machine).
+- **AI providers:** OpenAI GPT Image, Stability AI, Google Gemini image models, or **ComfyUI** (local or self-hosted).
 - **License:** GPL-3.0-or-later.
 
-> **Honest status:** every feature below is implemented and covered by automated tests that use an offline *test* provider and fake HTTP servers. Request formats follow each provider's public API documentation. They were **not** verified against the live services in this development environment, because outbound access to AI APIs was blocked there. Please run the 5-minute [real-provider checklist](docs/TESTING.md#manual-end-to-end-checklist-real-provider) on your setup.
+> **Status in one sentence:** the add-on, its Blender integration and its projection pipeline are tested automatically on two Blender versions, including real Cycles renders. **No request has yet been made to a real AI service:** the development environment had neither credentials nor network access to any provider or model host. Run [`tools/real_provider_test.py`](#test-it-with-a-real-provider-10-minutes) once to verify your provider.
 
 ---
 
@@ -17,137 +17,137 @@ Inspired by the texturing workflow of Modddif (multi-view generation, reference 
 
 1. Download `dist/ai_texture_studio-1.0.0.zip` (or build it: `python tools/build.py`).
 2. In Blender: **Edit › Preferences › Get Extensions › ▾ (top right) › Install from Disk…** and pick the zip.
-   You can also drag and drop the zip onto the Blender window.
-3. Enable **Allow Online Access** (Preferences › System › Network) if you use a hosted provider. The add-on respects this switch; local ComfyUI on `127.0.0.1` works without it.
-4. Open **Preferences › Add-ons › AI Texture Studio**, choose a provider and set up its key (see below).
+3. For hosted providers, enable **Allow Online Access** (Preferences › System › Network). The add-on respects this switch; local ComfyUI on `127.0.0.1` works without it.
+4. Open **Preferences › Add-ons › AI Texture Studio**, choose a provider and set up its key (see below). **List Models** shows the model ids your account can use.
 5. In the 3D Viewport press **N** and open the **AI Texture** tab.
 
-## Configure a provider (short version, details in [docs/PROVIDERS.md](docs/PROVIDERS.md))
+## Configure a provider (details in [docs/PROVIDERS.md](docs/PROVIDERS.md))
 
-| Provider | What you need | Key environment variable (default) |
-|---|---|---|
-| OpenAI GPT Image | API key with image access; model `gpt-image-1.5` (presets: 1, 1-mini, 2) | `OPENAI_API_KEY` |
-| Stability AI | API key (credits) | `STABILITY_API_KEY` |
-| Google Gemini | Gemini API key; model `gemini-2.5-flash-image` | `GEMINI_API_KEY` |
-| ComfyUI | A running ComfyUI server plus a checkpoint name; a depth ControlNet is recommended | none (optional token) |
+| Provider | What you need | Default model | Key environment variable |
+|---|---|---|---|
+| OpenAI GPT Image | API key with image access | `gpt-image-1.5` (presets: 1, 1-mini, 2) | `OPENAI_API_KEY` |
+| Stability AI | API key (credits) | fixed v2beta endpoints | `STABILITY_API_KEY` |
+| Google Gemini | Gemini API key | `gemini-3.1-flash-image` | `GEMINI_API_KEY` |
+| ComfyUI | Running server plus checkpoint; a depth ControlNet is recommended | your checkpoint | none (optional token) |
 
-**Key storage options**, set per provider:
+**Key storage**, set per provider:
 
-- **Environment variable** (recommended): nothing is stored by Blender.
-- **Session only**: kept in memory and gone when Blender quits.
+- **Environment variable** (recommended).
+- **Session only**: memory only.
 - **System keyring**: needs the `keyring` package.
-- **Blender preferences**: **plain text** in `userpref.blend`; least secure.
+- **Blender preferences**: **plain text** in `userpref.blend`.
 
-Keys are redacted from every message, history entry and console print.
+Keys are redacted from every message, history entry and console print. Before the first request to a hosted provider, a dialog shows what will be sent; those requests are billed by the provider. Requests per run = enabled views that still have something to paint; finished views are skipped. A correction is one request.
 
-The first request to a hosted provider shows exactly what will be sent and asks you to confirm. Hosted providers bill per generated image. A multi-view run costs **one request per enabled view**, but views with nothing left to paint are skipped for free. A correction costs one request.
+## Test it with a real provider (≈10 minutes)
+
+```bash
+export OPENAI_API_KEY=sk-...                       # or STABILITY_API_KEY / GEMINI_API_KEY
+blender -b --factory-startup --online-mode --python tools/real_provider_test.py -- --provider OPENAI --yes
+```
+
+About 7 image requests are sent: 3 for a cube, 3 for a character, and 1 correction. The script reports PASS/FAIL for each step:
+
+- generate
+- image validation
+- material and UV wiring
+- Cycles render
+- save, reopen and pixel-identical texture
+- local-correction locality
+- PBR wiring
+- GLB re-import in a clean Blender
+
+It writes `ats_real_provider_test/report.md` plus renders and the raw provider outputs **for you to look at**. Without `--yes` it only prints what it would send. Full instructions, including Windows and ComfyUI, are in [docs/TESTING.md](docs/TESTING.md#2-real-provider-test).
 
 ## Quick start
 
-1. Select a mesh. **Analyze Mesh** reports dimensions, UV islands, overlap, materials, existing textures, flipped normals, and how much of the surface the enabled cameras can see.
-   No UVs? **Create UV Map** adds a *new* UV map (Smart UV, Lightmap or Cube); your data is untouched.
-2. **Prompt & Reference:** write a prompt and, optionally, pick a reference image.
-3. **Style & Resolution:** choose a style, material, detail, wear, prompt strength and an optional colour palette. Texture size is 512–4096; view size is 512–1024.
-4. Click **Generate (N requests)**. Each finished view appears on the model immediately as its own layer.
-5. **Local Refinement:** paint a mask on the model (**Paint Mask**) or select faces. Describe the change, then **Generate Correction**. The result is a *pending* layer: compare it, then **Accept** or **Reject**.
-6. **PBR Maps:** generate roughness, metallic, normal and height approximations (each labelled as such) plus an AO map baked from the geometry.
-7. **Export:** **Save Textures** (clearly named PNGs plus an optional ORM pack) and **Export Model** (`.glb` or `.fbx`).
+1. Select a mesh and click **Analyze Mesh**. It reports UVs, overlaps, materials, existing textures, flipped normals, and how much surface the enabled cameras see. No UVs? **Create UV Map** adds a *new* map.
+2. Write a prompt; optionally pick a reference image.
+3. Choose a style, material, detail, wear, prompt strength and an optional palette. Texture size is 512–4096.
+4. **Generate (N requests)**: each finished view appears on the model as its own layer.
+5. **A view looks wrong?** Click ▶ on that view in *Multi-View* to regenerate only it. The other views stay as they are and act as context; the old version is kept, hidden, for comparison.
+6. **Local Refinement:** paint a mask or select faces, describe the fix, then **Generate Correction** → *Compare* → **Accept / Reject**.
+7. **PBR Maps:** roughness, normal and height approximations (labelled as such), metallic from a value, and AO baked from the geometry.
+8. **Export:** **Save Textures** and **Export Model** (`.glb` / `.fbx`).
 
 Example prompts:
 
-- *Weathered dark iron armor with hand-painted scratches and subtle edge wear.* Style: Hand-painted, Material: Metal, Wear 0.6.
-- *Stylized low-poly orc skin, muted green tones, painted shadows, and subtle color variation.* Style: Low-poly; enable a palette.
-- *Old wooden shield with chipped paint, visible wood grain, and a worn medieval appearance.* View preset: Front + Back.
-- *Realistic leather straps with stitching, creases, and darkened edges.* Style: Realistic, Material: Leather.
+- *Weathered dark iron armor with hand-painted scratches and subtle edge wear* (Hand-painted, Metal, Wear 0.6).
+- *Stylized low-poly orc skin, muted green tones, painted shadows, and subtle color variation* (Low-poly, palette on).
+- *Old wooden shield with chipped paint, visible wood grain, and a worn medieval appearance* (views: Front + Back).
+- *Realistic leather straps with stitching, creases, and darkened edges* (Realistic, Leather).
 
 More in [docs/USAGE.md](docs/USAGE.md).
 
-## Feature status
+## What is verified, and how
 
-### Implemented, with automated tests
+### Verified automatically: 124 tests, run in this repository on Blender 4.2.23 LTS and 5.0.1
 
-- **Sidebar UI** with sections: Selected Object, Prompt & Reference, Style & Resolution, Generate, Multi-View, Local Refinement, Texture Layers (+ History), PBR Maps, Export, and AI Provider. Every panel's draw code is validated in tests.
-- **Generation modes:**
-  - text-only, reference-only, or text + reference generation
-  - negative prompts: a native field where the provider has one, otherwise explicit "Avoid: …" text
-  - fixed seed where supported
-  - preview of the exact prompt and parameters sent
-- **Style controls** that change the actual request: style (8 presets), material, detail, wear, prompt strength (mapped to provider parameters such as `control_strength`, `input_fidelity` and denoise), colour palette (prompt plus optional output palette lock), and pixel-art output filter.
-- **Multi-view projection** onto existing UVs:
-  - 10 preset cameras plus custom viewport cameras; enable, reorder and run single views
-  - perspective or orthographic projection, following the object's rotation
-  - depth-buffer occlusion and facing-angle selection, with deferral of grazing angles to better views
-  - silhouette rejection, seam cross-fade bands, auto-alignment and colour matching
-  - fill for hidden areas, clearly labelled *not AI-generated*
-  - per-view layers, and inspection of each view's render / mask / raw AI output / aligned output / depth map
-- **Consistent multi-object texturing:** shared art direction, seed and reference; the first object's result is fed to the rest as a reference.
-- **Tileable material mode:** a seamless swatch is generated and tiled over the UVs.
-- **Local refinement:**
-  - masks from viewport painting (Texture Paint), faces selected in Edit Mode, or both; the mask is a normal image you can also edit in the Image Editor
-  - grow and feather controls
-  - viewport-based or UV-space correction
-  - only masked pixels change
-  - pending layer with Accept / Reject, iterative refinement and undo
-- **Layers:**
-  - base (import an existing texture), view, fill, correction, paint and tile layers
-  - visibility, opacity, 8 blend modes, rename, duplicate, delete, reorder, merge down and flatten
-  - edit layer pixels, change resolution
-  - own **undo/redo**, generation history with restore, and an editable prompt history
-- **Materials:** never destroys user materials. Each slot is copied (`<name>_ATS`), or one single material is used. Originals are protected and can be restored with one click.
-  - Correct colour spaces, tangent-space Normal Map node bound to the UV map, and a glTF "Material Output" group for AO.
-- **PBR:**
-  - roughness, normal and height derived from the base colour (labelled approximations)
-  - metallic from a preset or value, optionally masked (user-authored)
-  - AO baked with Cycles from the geometry
-  - ORM channel pack and a DirectX normal copy
-- **Export and saving:** save textures, pack into the `.blend`, export glTF/FBX, and transfer (bake) the maps onto another UV map.
-- **Robustness:**
-  - background threads with main-thread scene updates; Blender stays responsive (≈0.1 s of main-thread work per finished view at 2048²)
-  - cancellation, Retry, and rate-limit back-off honouring `Retry-After`
-  - timeouts, plus validation of the image data that comes back
-  - safe recovery after failed or partial runs
-  - files are moved next to the `.blend` on save, with relative paths that survive "Save As"
-- **Scene preservation:** mesh, topology, transforms, modifiers, rig, shape keys, vertex groups and material assignments are verified unchanged by tests.
+No real AI model or service is involved in any of these; generation uses deterministic synthetic providers.
 
-### Partially implemented
+- **Installation and UI:**
+  - the extension ZIP installs through Blender's own extension installer and enables
+  - every panel, list and preferences page draws in all states
+- **Scene preservation:**
+  - mesh, topology, transforms, modifiers, armature, shape keys and vertex groups unchanged
+  - original materials kept and restorable; unrelated objects untouched
+- **Projection correctness in real Cycles renders:**
+  - a pattern painted in a view reappears at the right place in a render from a matching Blender camera
+  - with a perfectly consistent provider, renders from **3/4 angles no generation camera used** match ground truth within **0.8/255 mean, 1.6/255 p99**, so the projection adds no visible seams
+- **Single-view regeneration in Cycles renders:** the regenerated view's region changes, while the other sides stay pixel-identical.
+- **Local refinement in Cycles renders:**
+  - a face-selection mask changes exactly that face; untouched faces stay unchanged
+  - Reject restores the texture exactly
+  - a failed correction changes nothing
+- **Failures:** network, timeout, rate limit, auth, content policy, invalid and blank images all produce no layers and no material change. A partial failure keeps the finished views, and Retry pays only for the rest.
+- **Persistence:** save, reopen and *Save As* elsewhere keep relative texture paths and pixel-identical textures.
+- **Export:** GLB re-imported in a **separate factory-clean Blender process** keeps base colour (pixel-matched), roughness, metallic and normal connections.
+- **Providers (against local fake servers, not the real services):**
+  - endpoints, headers, multipart fields, mask conventions
+  - parameter fallbacks, error classification, `Retry-After`, timeouts, cancellation, model listing
 
-- **Cancelling an in-flight HTTP request:** Python cannot abort the socket. The job stops at the next checkpoint and the late result is discarded; ComfyUI also receives `/interrupt`.
-- **Viewport mask painting:** this uses Blender's own Texture Paint. On Blender 4.3+ (brush assets) the add-on tries to set a white brush colour, but you may need to pick white once yourself.
-- **Live providers:** the provider code is complete and request formats are tested against local fakes, but it is not live-verified here (see above).
+### Implemented and tested only offline: needs your credentials to confirm
 
-### Planned (architecture ready)
+- Real generation quality and API acceptance with **OpenAI**, **Stability AI**, **Gemini** and **ComfyUI**. Request formats follow current public documentation (checked October 2026), but providers change models and parameters often.
+- Whether a specific model honours masks, reference images and the "keep the silhouette" instruction well enough for good projection. Auto-align and colour matching compensate for small drifts; their effect on real model outputs is unmeasured.
+- **Test Connection** and **List Models** against the live APIs.
 
-- AI-*estimated* PBR maps via dedicated material-estimation models (for example, ComfyUI workflows). Today only base colour is AI-generated.
-- Reference-image (IP-Adapter) support in the built-in ComfyUI workflow. Custom workflows can already use `{{REFERENCE}}`.
-- More providers through the provider interface: Black Forest Labs Flux Fill/Kontext, fal.ai, Replicate.
-- Optional view upscaling, UDIM tiles, and GPU rasterization.
+→ Run `tools/real_provider_test.py` (above) and look at the renders.
 
-## Known limitations
+### Needs interactive testing in a Blender window
 
-See [docs/TROUBLESHOOTING.md#known-limitations](docs/TROUBLESHOOTING.md#known-limitations). Most important:
+Headless automation cannot exercise these; the [manual checklist](docs/TESTING.md#3-interactive-checklist) covers them:
 
-- **Consistency:** image models are not 3D-aware. Sequential inpainting with context, seam bands and colour matching keep views coherent, but small detail mismatches at seams can occur. Fix them with 3/4 views, a custom viewport view, or Local Refinement.
-- **Hidden surfaces:** surfaces no camera can see are colour-extended, not painted. They are labelled and reported in Analyze/History.
-- **Mirrored/overlapping UVs:** these islands share one texture.
-- **PBR maps:** roughness, normal and height are image-derived approximations, not measured material data.
+- **From Viewport** refinement (needs a 3D viewport; the underlying pipeline is tested)
+- Mask painting in Texture Paint mode
+- Image Editor display
+- Progress updates while generating in the background
+- Cancel during a running request
+- Ctrl+Z after a generation
+- The consent dialog
+
+### Known limitations
+
+- **Cross-view consistency** depends on the model. Image models are not 3D-aware; context inpainting, seam bands and colour matching reduce mismatches but cannot guarantee identical details on both sides of a seam. Regenerate single views or use Local Refinement.
+- **Hidden surfaces** (seen by no camera) are **colour-extended from the nearest painted surface in 3D, not AI-painted**. They sit on their own *Hidden-area fill* layer, shown red in the **Provenance Map**. Pixels seen only at flat angles sit on a *Low-angle views* layer. A view added later will repaint both.
+- **PBR maps:** only base colour is AI-generated. Roughness, normal and height are **image-derived approximations**, not physically measured or AI-generated maps; metallic is a user value; AO is a real geometric bake.
+- **Overlapping or mirrored UVs** share texture. UDIM and UVs outside 0–1 are unsupported.
+- **Cancel** cannot abort a request the provider is already processing, so it may still be billed.
+- **Model ids change.** For example, `gemini-2.5-flash-image` is scheduled for retirement. Use **List Models** when a model is rejected.
 
 ## Tests
 
 ```bash
-# Blender integration + unit tests with the PyPI "bpy" module (Python 3.11)
 python3.11 -m venv venv && venv/bin/pip install bpy==4.2.23 numpy==1.26.4 pytest
-venv/bin/python -m pytest tests
-
-# or inside your own Blender
-blender --background --factory-startup --python tests/blender/run_in_blender.py
+venv/bin/python -m pytest tests                     # or: blender -b --factory-startup --python tests/blender/run_in_blender.py
 ```
 
-See [docs/TESTING.md](docs/TESTING.md) for what is covered and the manual checklist.
+See [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation
 
-- [docs/USAGE.md](docs/USAGE.md): complete workflow, tips for stylized game assets.
-- [docs/PROVIDERS.md](docs/PROVIDERS.md): setup, capabilities, costs, data handling, how to add a provider.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): research summary, design, multi-view algorithm, roadmap.
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): common problems, known limitations.
-- [docs/TESTING.md](docs/TESTING.md): automated tests and manual integration procedure.
+- [docs/USAGE.md](docs/USAGE.md): workflow, single-view regeneration, protection, provenance, tips for stylized assets.
+- [docs/PROVIDERS.md](docs/PROVIDERS.md): setup, capabilities, costs, data handling, model churn.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): design and multi-view algorithm.
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): common problems.
+- [docs/TESTING.md](docs/TESTING.md): automated tests, real-provider test, interactive checklist.

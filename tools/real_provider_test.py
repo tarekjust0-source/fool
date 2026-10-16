@@ -245,7 +245,6 @@ def check_generation(rep, name, obj, job, mod, args, expect_calls_max):
     rep.step(f"{name}: AI-generated share of surface", frac["AI"] > 0.3,
              f"AI {frac['AI']:.0%}, low-angle {frac['AI_LOW']:.0%}, colour-extended {frac['EXTEND']:.0%}")
     img = obj.ats.base_image
-    import numpy as np
     _, buf = pixel_hash(img)
     rgb = buf.reshape(-1, 4)[:, :3]
     rep.step(f"{name}: base colour image is a real texture", img.size[0] == obj.ats.texture_size and rgb.std() > 0.02,

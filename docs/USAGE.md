@@ -59,7 +59,8 @@ Progress, cancellation and errors appear at the top of the panel. **Retry** repe
 ## 5. Multi-View
 
 - The view list holds preset cameras (Front, Right, Left, Back, Top, Bottom and four 3/4 views) and **custom viewport views** (➕ captures the current viewport angle; useful for armpits, undersides and other hidden areas).
-- Order matters: earlier views define the design and later views continue it. ▶ on a row generates only that view.
+- Order matters: earlier views define the design and later views continue it.
+- **▶ on a row regenerates only that view.** Its previous layers are ignored while planning, so it repaints exactly the area it painted before, with every other view visible to the AI as context. The other views' layers are not touched. The old version is kept, hidden and renamed "(previous)": toggle 👁 to compare, or delete it. One request.
 - **Preset menu:** 6 axis views; *Character* (overlapping 3/4 views, smoother on organic shapes); *Front + Back* (shields, signs); *All*.
 - **Inspect last run:** *Render* (what the AI saw), *Mask* (what it was asked to paint), *AI Output* (raw), *Aligned*, *Depth*. The view's layer in Texture Layers is its projection result.
 - **Settings:**
@@ -67,7 +68,16 @@ Progress, cancellation and errors appear at the top of the panel. **Retry** repe
   - *Seam Blend*: pixels of existing texture repainted and cross-faded at view seams.
   - *Auto Align*: corrects small offsets from providers that redraw the whole frame.
   - *Match Colours*: matches each new view to the existing texture.
-  - *Fill Hidden Areas*: colour-extends surfaces no camera saw (a separate *Hidden-area fill* layer).
+  - *Fill Hidden Areas*: colour-extends surfaces no camera saw. The colour comes from the nearest painted surface in 3D; it is **not AI-generated**.
+
+**What counts as already painted.** A view only paints texels that are not yet painted with confidence:
+
+- Layer kinds:
+  - **Low-angle views**: AI pixels seen only at a flat angle, kept as a fallback.
+  - **Hidden-area fill**: colour extension.
+- Neither kind blocks a later view. A view you add for a hidden area *will* paint it, and the obsolete fill is replaced once the run succeeds.
+- Layers marked **Protect** (🔒) are never written by generation, not even by seam blending. This is the default for imported base textures, paint layers and accepted corrections.
+- *Start From Scratch* ignores all unprotected layers.
 
 **How a view is painted.** The mesh is rendered from the camera, showing the texture so far, with grey clay where nothing is painted yet. The AI paints the clay region, plus a thin band of existing texture so it continues seamlessly. The result is projected back only onto texels that camera sees well.
 
@@ -81,12 +91,31 @@ Progress, cancellation and errors appear at the top of the panel. **Retry** repe
 2. Choose the method:
    - **From Viewport**: the AI sees the object from the current 3D view. Best for most fixes; orbit so the area faces you.
    - **In UV Space**: edits the atlas directly; works for hidden areas.
-3. Type the correction (for example, *Replace this area with rusty iron*), then **Generate Correction**.
+3. Type the correction (for example, *Replace this area with rusty iron*), then **Generate Correction**. The request includes the current texture around the area and your main prompt as design context.
 4. The result is a **pending** layer. Toggle *Compare* to see before and after, then **Accept** or **Reject**. Only masked texels change. Repeat as often as you like; every step is undoable.
 
 ## 7. Texture Layers and History
 
-- Top layer first. 👁 toggles visibility; you can set opacity, blend mode (8 modes) and a name (double-click).
+- Top layer first. 👁 toggles visibility; you can set opacity, blend mode (8 modes), a name (double-click) and 🔒 *Protect*.
+- Each layer shows its provenance:
+
+  | Tag | Meaning |
+  |---|---|
+  | `AI` | view, correction or tile |
+  | `AI·low` | low-angle views |
+  | `extend` | colour extension, not AI |
+  | `import` | imported texture |
+  | `paint` | hand-painted |
+  | `mixed` | merged |
+
+  **Show Provenance Map** colours the model by where each pixel comes from:
+  - green: AI
+  - yellow: AI at a low angle
+  - red: colour extension
+  - blue: imported or painted
+  - dark: unpainted
+
+  It also reports the percentages.
 - ➕ adds an empty paint layer. **Import Existing Texture** turns the object's current image into a base layer, so generation only fills what it doesn't cover.
 - Layer operations: duplicate, delete, move, merge down, flatten.
 - **Edit Layer Pixels** opens the layer in Texture Paint; finish with **Apply Layer Edits**.

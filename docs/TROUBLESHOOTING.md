@@ -6,6 +6,8 @@
 | "has no UV map" | Use **Create UV Map** (adds a new map) or unwrap manually. |
 | "No API key configured" | Preferences › AI Texture Studio: check *Key Storage*. With *Environment Variable*, the variable must exist **before** Blender starts. The status line says whether a key was found; it never shows the key. |
 | "Online access is disabled" | Preferences › System › Network › **Allow Online Access** (needed for hosted providers and remote ComfyUI). |
+| "model not found" / 404 / model retired | Model ids change often (e.g. `gemini-2.5-flash-image` is being retired). Click **List Models** next to the model field and pick one. |
+| A single view looks wrong | Click ▶ on that view (Multi-View): only it is regenerated, with the other views as context; the old version is kept hidden for comparison. |
 | HTTP 401/403 | Wrong or expired key, or the key lacks image access. |
 | 402 / "quota" / "credits" | Top up your provider account. |
 | 429 rate limit | Retries happen automatically with back-off; press **Retry** later if it persists. |
@@ -15,7 +17,8 @@
 | ComfyUI "rejected the workflow" | The checkpoint or ControlNet file name is wrong (it must match ComfyUI's list exactly), or a custom workflow is not in **API format**. |
 | Texture appears shifted or doubled on the model | Keep **Auto Align** on (OpenAI/Gemini). Inspect the view's *Render* vs *AI Output*. Lower *Prompt Strength* for closer adherence. |
 | Visible seams between views | Raise *Seam Blend* (16–24), enable 3/4 views (*Character* preset), keep *Match Colours* on, then fix leftovers with Local Refinement. |
-| Some areas are smeared or blurry | Those areas were hidden from every camera and colour-extended (see *Hidden-area fill* layer and History). Add a viewport view facing them, or refine them in UV space. |
+| Some areas are smeared or blurry | Those areas were hidden from every camera and colour-extended (red in **Show Provenance Map**). Add a viewport view facing them and generate again: only those areas are requested. Or refine them in UV space. |
+| Generation repainted something I wanted to keep | Enable 🔒 *Protect* on that layer; protected pixels are never repainted. Imported base textures, paint layers and accepted corrections are protected by default. |
 | Correction says "not visible from this view" | Orbit so the masked area faces the viewport, or switch the method to *In UV Space*. |
 | "mask does not touch the surface" | The mask lies in empty UV space; paint on the model or select faces. |
 | Mask brush paints in colour, not white | Blender 4.3+ brush assets: pick white in the brush colour once. |

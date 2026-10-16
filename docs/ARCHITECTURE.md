@@ -78,13 +78,25 @@ Cancellation is checked between steps and during retry waits. A late HTTP result
    - Texels already textured inside the band get a **cross-fade** alpha.
    - Grazing texels become **fallback** candidates (best facing wins).
 6. The view becomes an RGBA layer; the in-memory state is updated so the next view sees it.
-7. After all views: fill layer = fallbacks, plus push-pull colour extension for surfaces no camera saw (reported as a fraction).
+7. After all views (only if at least one request was made), two layers below the views:
+   - **Low-angle views**: AI fallback pixels.
+   - **Hidden-area fill**: colour extension for texels no camera saw, taken from the nearest painted surface in 3D using a voxel pyramid. This replaced a UV-space push-pull, which could bleed colour from unrelated UV islands.
+   - Both supersede older ones.
+
+**Planning tiers.** A run starts from:
+
+- **confident paint**: visible view, correction, base and paint layers;
+- **low-angle pixels**: shown to the AI as context and counted as painted when deciding skips/masks, but replaceable by a better view;
+- **nothing** for colour-extension fill, which is always repaintable.
+
+Protected layers form a texel mask that projection never writes. Single-view regeneration plans without that view's own layers. Each request carries its camera as local metadata (not sent by built-in providers).
 
 Globally inverted normals are detected (signed volume) and re-oriented in the snapshot. Thin two-sided objects keep separate front and back paint.
 
 Measured accuracy with a perfectly consistent "oracle" provider (`tests/unit/test_projection_quality.py`):
 
 - Sphere: mean error 0.2/255 at 100% coverage.
+- Validated again through Cycles renders of the add-on's material, from 3/4 angles no generation camera used: 0.8/255 mean, 1.6/255 p99 (`tests/blender/test_render_validation.py`).
 - Occluding scene: 1.6/255.
 - With 9 px provider drift: 0.5/255 with auto-align versus 4.1/255 without.
 

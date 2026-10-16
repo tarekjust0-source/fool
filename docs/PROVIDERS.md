@@ -4,8 +4,11 @@ Choose a provider in **Preferences › Add-ons › AI Texture Studio**, or in th
 
 ## Capability matrix
 
+Formats were checked against the providers' public documentation in October 2026 and tested against local fake servers. They have **not** been exercised against the live services from this repository: run `tools/real_provider_test.py` (see TESTING.md).
+
 | | OpenAI GPT Image | Stability AI | Google Gemini | ComfyUI (local) |
 |---|---|---|---|---|
+| Model listing | `GET /v1/models` | – (fixed endpoints) | `GET /v1beta/models` | `GET /object_info` |
 | Endpoint(s) | `/v1/images/edits`, `/v1/images/generations` | `/v2beta/stable-image/control/structure`, `…/control/style-transfer`, `…/edit/inpaint`, `…/generate/core` | `/v1beta/models/{model}:generateContent` | `/upload/image`, `/prompt`, `/history`, `/view`, `/interrupt` |
 | Mask | soft (alpha mask, model may redraw) | **true inpainting** | described plus a mask image (soft) | **true** (`SetLatentNoiseMask`) |
 | Structure from the mesh | render as input image | **structure control** | render as input image | **depth ControlNet** (optional) |
@@ -26,7 +29,12 @@ Requests per multi-view run equal the number of enabled views that still have so
 3. Model: `gpt-image-1.5` (default); presets include `gpt-image-1`, `gpt-image-1-mini` and `gpt-image-2`. Any model id can be typed. Quality: low, medium, high or auto.
 4. *API URL* can point to a compatible gateway, for example `https://my-proxy/v1`.
 
-Notes: output size is 1024×1024 for square views. `input_fidelity` is sent only for models known to accept it, and the request is retried automatically without it if the server rejects the parameter.
+Notes:
+
+- **Output:** 1024×1024 for square views; `output_format=png` is requested.
+- **`input_fidelity`:** sent only for GPT Image 1 and 1.5. gpt-image-2 always uses high fidelity and rejects the parameter.
+- **Rejected parameters:** if a model rejects an optional parameter (`quality`, `output_format`, `input_fidelity`), the request is retried once without it. Newer models changed the `quality` values.
+- **Model choice:** use **List Models** to pick from the GPT Image models your key can access.
 
 ## Stability AI
 
@@ -43,7 +51,7 @@ Endpoint selection is automatic:
 ## Google Gemini
 
 1. Create a key in Google AI Studio and set `GEMINI_API_KEY`.
-2. Model: `gemini-2.5-flash-image` (default) or another image-capable Gemini model id, for example `gemini-3-pro-image-preview`.
+2. Model: `gemini-3.1-flash-image` (default; the stable id in Google's model list in October 2026). `gemini-2.5-flash-image` is still offered as a preset but is scheduled for retirement, and preview ids are shut down regularly. **List Models** queries `GET /v1beta/models` and shows the image-capable models your key can use.
 
 Notes: the key is sent in the `x-goog-api-key` header, never in the URL. Free-tier data may be used by Google to improve its products; see Google's terms.
 
@@ -53,6 +61,7 @@ Notes: the key is sent in the `x-goog-api-key` header, never in the URL. Free-ti
 2. *Model* is the checkpoint **file name** as listed in ComfyUI, for example `sd_xl_base_1.0.safetensors`.
 3. Recommended: set *Depth ControlNet* to a depth ControlNet that matches your checkpoint. The add-on renders an exact depth map of your mesh for every view.
 4. Steps, CFG, sampler and scheduler are configurable; built-in nodes only, no custom nodes required.
+   The 🔍 buttons list the checkpoints and ControlNets installed on the server (`GET /object_info/<node>`).
 5. **Custom workflow:** export your graph with *Save (API Format)* and point *Custom Workflow* to it. These placeholders are replaced:
    `{{PROMPT}} {{NEGATIVE}} {{SEED}} {{DENOISE}} {{STEPS}} {{CFG}} {{IMAGE}} {{MASK}} {{DEPTH}} {{REFERENCE}} {{WIDTH}} {{HEIGHT}}`.
    Exact-match placeholders keep their numeric type.
