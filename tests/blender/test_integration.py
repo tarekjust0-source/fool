@@ -793,3 +793,20 @@ def test_resize_layers_and_cleanup_files():
     for ly in obj.ats.layers:                      # nothing referenced was deleted
         assert os.path.exists(bpy.path.abspath(ly.filepath))
     assert len(after) <= len(before)
+
+
+def test_opening_a_file_during_a_job_does_not_block_future_jobs():
+    jobs_mod = __import__(f"{MOD}.core.jobs", fromlist=["x"])
+    stuck = jobs_mod.Job("generate", "Stuck")
+    stuck.status = "RUNNING"
+    runtime._state["job"] = stuck
+    bpy.ops.wm.read_homefile(use_empty=True)
+    assert stuck.cancel_event.is_set()
+    assert runtime.active_job() is None
+    obj = add_cube("AfterLoad")
+    sc = bpy.context.scene.ats            # new file -> fresh scene settings
+    sc.prompt = "painted wood"
+    sc.texture_size = sc.view_size = "512"
+    res, job = generate(obj)
+    assert res == {"FINISHED"}, LAST_ERROR[-1:]
+    assert job.status == "DONE"

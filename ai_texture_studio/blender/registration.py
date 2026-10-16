@@ -44,6 +44,7 @@ def _save_post(*_args):
 @persistent
 def _load_post(*_args):
     storage.clear_cache()
+    runtime.reset_after_file_load()
 
 
 def _decoder(data: bytes):

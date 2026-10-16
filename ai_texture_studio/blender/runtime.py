@@ -194,6 +194,27 @@ def _redraw():
                 area.tag_redraw()
 
 
+def reset_after_file_load():
+    """A new .blend was opened: the scene a running job targets is gone.
+
+    Cancel it and forget it, so future jobs are not blocked (Blender also
+    drops non-persistent timers on load, so nothing would drain it anyway).
+    """
+    j = _state["job"]
+    if j is not None:
+        j.cancel()
+        j.status = "CANCELLED"
+        j.message = "Cancelled: another file was opened"
+    _state.update({"job": None, "handler": None, "on_finish": None, "last": None})
+    while not _main_calls.empty():
+        try:
+            fn, args, box, done = _main_calls.get_nowait()
+        except queue.Empty:
+            break
+        box["error"] = RuntimeError("File changed")
+        done.set()
+
+
 def shutdown():
     j = active_job()
     if j is not None:

@@ -7,7 +7,7 @@
 | `tests/unit/test_core.py` (45 tests) | any Python 3.11 with numpy | PNG codec (all 5 filter types, corruption), resampling, rasteriser (coverage, z-buffer, huge triangles, UV overlap), cameras, multi-view pipeline (coverage, skipping, occlusion, min-facing deferral, flipped normals, thin two-sided shield), alignment, colour match, local refinement (UV and view), tiles, cancellation, compositing modes, padding/fill, normal-map orientation, PBR ranges, prompt composition, key redaction, mesh analysis |
 | `tests/unit/test_projection_quality.py` (3 tests) | same | quantitative reconstruction error with a perfectly consistent oracle provider, including occlusion and drift + auto-align |
 | `tests/unit/test_providers.py` (25 tests) | same | exact wire format for OpenAI / Stability / Gemini / ComfyUI against local fake servers (multipart fields, mask conventions, headers, JSON), error classification (401/402/429/400-policy/5xx), Retry-After, timeouts, network errors, invalid image bodies, cancellation during back-off, missing keys |
-| `tests/blender/test_integration.py` (28 tests) | Blender (bpy module or real Blender) | the extension zip is **built, installed via Blender's extension installer and enabled**, then real operators are driven (see list below) |
+| `tests/blender/test_integration.py` (29 tests) | Blender (bpy module or real Blender) | the extension zip is **built, installed via Blender's extension installer and enabled**, then real operators are driven (see list below) |
 | `tests/blender/test_ui.py` (2 tests) | Blender | every panel, UI list and preferences page drawn in all states with a validating layout (every property and operator must exist) |
 
 Integration scenarios:
@@ -27,8 +27,9 @@ Integration scenarios:
 - repeated generation (skips already textured areas), regenerate, correction reject/accept with exact pixel restore, layer operations, undo/redo, history restore, prompt history
 - visibility and opacity effects, tileable mode, multi-object shared look, viewport refinement guard
 - import of an existing texture, prompt preview reflecting style controls, UV transfer, resize and cleanup
+- opening another file while a job runs (job cancelled; later jobs not blocked)
 
-Results in the development environment (bpy 4.2.23 LTS and 5.0.1 from PyPI, Python 3.11, Linux): **all 103 tests passed on both versions**, run against the built ZIP.
+Results in the development environment (bpy 4.2.23 LTS and 5.0.1 from PyPI, Python 3.11, Linux): **all 104 tests passed on both versions**, run against the built ZIP.
 
 ### Running
 
