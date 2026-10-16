@@ -34,6 +34,7 @@ class GenerationSpec:
     seed: int | None = None
     references: list = field(default_factory=list)   # (H,W,3) uint8
     request_size: int = 1024
+    design_context: str = ""                           # main prompt, given to local corrections
 
 
 def _caps(provider, cfg):
@@ -42,7 +43,7 @@ def _caps(provider, cfg):
     return caps, pb
 
 
-def _build_request(provider, cfg, spec: GenerationSpec, *, purpose, view_label, image, mask, depth):
+def _build_request(provider, cfg, spec: GenerationSpec, *, purpose, view_label, image, mask, depth, camera=None):
     caps, pb = _caps(provider, cfg)
     refs = list(spec.references) if pb.REFERENCE in caps else []
     ref_scope = getattr(provider, "reference_purposes", None)
@@ -50,7 +51,7 @@ def _build_request(provider, cfg, spec: GenerationSpec, *, purpose, view_label, 
         refs = []
     mask_as_image = getattr(provider, "mask_as_image", False) and mask is not None
     cp = compose(spec.prompt, spec.negative, spec.style, purpose=purpose, view_name=view_label,
-                 has_reference=bool(refs), has_mask_image=mask_as_image)
+                 has_reference=bool(refs), has_mask_image=mask_as_image, design_context=spec.design_context)
     size = spec.request_size
     img = None if image is None else imageio.to_uint8(image)
     msk = mask
@@ -65,6 +66,7 @@ def _build_request(provider, cfg, spec: GenerationSpec, *, purpose, view_label, 
         prompt=cp.prompt, negative_prompt=cp.negative, purpose=purpose, image=img, mask=msk, depth=dep,
         references=refs, width=size, height=size, seed=spec.seed, strength=cp.strength,
         style_preset=cp.style_preset if pb.STYLE_PRESET in caps else None,
+        camera=camera.to_dict() if camera is not None else None,
     ), cp
 
 
@@ -93,7 +95,8 @@ def run_multiview(job: Job, mesh: MeshData, cameras: list[ViewCamera], state: Te
             continue
         purpose = "first_view" if plan.first else "next_view"
         req, cp = _build_request(provider, cfg, spec, purpose=purpose, view_label=label.lower(),
-                                 image=plan.render.composite, mask=plan.ai_mask, depth=plan.render.depth_image)
+                                 image=plan.render.composite, mask=plan.ai_mask, depth=plan.render.depth_image,
+                                 camera=cam)
         prog(i, 0.15, f"{object_name} {label}: waiting for {provider.name} ({i + 1}/{n})")
         result = provider.generate(req, cfg, cancel=job.cancel_event)
         summary["calls"] += 1
@@ -159,7 +162,7 @@ def run_refine_view(job: Job, mesh: MeshData, cam: ViewCamera, state: TextureSta
                             "region faces the camera, or use UV-space refinement.")
     ai_mask = masks.dilate(screen, grow_px) & vr.mask
     req, cp = _build_request(provider, cfg, spec, purpose="refine", view_label="current",
-                             image=vr.composite, mask=ai_mask, depth=vr.depth_image)
+                             image=vr.composite, mask=ai_mask, depth=vr.depth_image, camera=cam)
     job.set_progress(0.2, f"Waiting for {provider.name}")
     result = provider.generate(req, cfg, cancel=job.cancel_event)
     job.check_cancel()

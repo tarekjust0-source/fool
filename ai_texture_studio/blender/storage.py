@@ -28,6 +28,35 @@ _cache: "OrderedDict[str, tuple[float, np.ndarray]]" = OrderedDict()
 CACHE_LIMIT_BYTES = 1536 * 1024 * 1024
 
 
+def prune_debug_runs(obj_dir: str, keep: int = 40) -> int:
+    """Keep only the newest ``keep`` intermediate-image folders of an object."""
+    d = os.path.join(obj_dir, "views")
+    if not os.path.isdir(d):
+        return 0
+    runs = sorted((e for e in os.scandir(d) if e.is_dir()), key=lambda e: e.stat().st_mtime, reverse=True)
+    for e in runs[keep:]:
+        shutil.rmtree(e.path, ignore_errors=True)
+    return max(0, len(runs) - keep)
+
+
+def cleanup_stale_sessions(max_age_days: float = 14.0) -> int:
+    """Delete session folders of unsaved files older than ``max_age_days``.
+
+    Recent ones are kept because Blender's recovery files may reference them.
+    """
+    import time
+    parent = os.path.dirname(_SESSION_DIR)
+    if not os.path.isdir(parent):
+        return 0
+    cutoff = time.time() - max_age_days * 86400
+    removed = 0
+    for e in os.scandir(parent):
+        if e.is_dir() and e.path != _SESSION_DIR and e.stat().st_mtime < cutoff:
+            shutil.rmtree(e.path, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", s).strip("_") or "object"
 

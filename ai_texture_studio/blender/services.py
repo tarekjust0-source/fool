@@ -481,6 +481,8 @@ def _on_generation_finished(job):
         if obj.ats.layers:
             layers.recomposite(obj, save=True)
             apply_material(obj, sc)
+    for d in job.context.get("out_dirs", {}).values():
+        storage.prune_debug_runs(d)
     if job.context.get("first_layer_done"):
         runtime.push_undo_step("AI Texture Studio: Generate")
 
@@ -547,6 +549,7 @@ def start_refine(context, obj):
         raise UserError("The mask does not touch the surface (it only covers empty UV space). "
                         "Paint on the model or select faces.")
     spec = make_spec(sc, prompt=sc.refine_prompt)
+    spec.design_context = sc.prompt if sc.prompt.strip() != sc.refine_prompt.strip() else ""
     cam = viewport_camera(context, int(sc.view_size), "Viewport") if sc.refine_space == "VIEW" else None
     job = runtime.BridgeJob("refine", "Local refinement")
     job.context["out_dirs"] = {obj.name: storage.object_dir(obj)}

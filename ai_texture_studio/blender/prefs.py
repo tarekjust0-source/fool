@@ -97,7 +97,10 @@ class ATS_AddonPreferences(bpy.types.AddonPreferences):
             row.operator("ats.reset_consent", text="Revoke").provider = p.id
 
         if p.id != "MOCK":
-            box.prop(s, "model")
+            row = box.row(align=True)
+            row.prop(s, "model")
+            if p.id != "STABILITY":
+                row.operator("ats.list_models", text="List Models", icon="VIEWZOOM").provider = p.id
             if p.model_presets:
                 row = box.row(align=True)
                 for m in p.model_presets:
@@ -112,7 +115,9 @@ class ATS_AddonPreferences(bpy.types.AddonPreferences):
             box.prop(s, "grow_mask")
         if p.id == "COMFYUI":
             box.label(text="Model above = checkpoint file name (as listed in ComfyUI)")
-            box.prop(s, "controlnet")
+            row = box.row(align=True)
+            row.prop(s, "controlnet")
+            row.operator("ats.list_models", text="", icon="VIEWZOOM").provider = "COMFYUI_CONTROLNET"
             row = box.row(align=True)
             row.prop(s, "control_strength")
             row.prop(s, "steps")

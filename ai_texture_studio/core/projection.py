@@ -218,9 +218,23 @@ def prepare_generated(plan: ViewPlan, generated: np.ndarray, s: ProjectionSettin
     vr = plan.render
     H, W = vr.mask.shape
     gen = imageio.to_float(imageio.rgb(generated))
+    info = {"shift": (0, 0), "align_confidence": None, "color_matched": False, "cropped_to_aspect": None}
+    gh, gw = gen.shape[:2]
+    if abs(gw / gh - W / H) > 0.02:
+        # The model changed the aspect ratio: stretching would misalign every pixel.
+        # Models keep the subject centred, so centre-crop to the requested aspect.
+        target = W / H
+        if gw / gh > target:
+            nw = int(round(gh * target))
+            x0 = (gw - nw) // 2
+            gen = gen[:, x0:x0 + nw]
+        else:
+            nh = int(round(gw / target))
+            y0 = (gh - nh) // 2
+            gen = gen[y0:y0 + nh]
+        info["cropped_to_aspect"] = [int(gw), int(gh)]
     if gen.shape[:2] != (H, W):
         gen = imageio.resize(gen, W, H)
-    info = {"shift": (0, 0), "align_confidence": None, "color_matched": False}
     if s.auto_align and may_misalign:
         dy, dx, conf = estimate_shift(vr.composite, gen, int(s.max_align_shift * max(H, W)))
         info["align_confidence"] = conf

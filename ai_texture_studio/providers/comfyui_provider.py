@@ -229,6 +229,29 @@ class ComfyUIProvider(b.Provider):
                 return imgs[0]
         return None
 
+    def node_options(self, cfg, node: str, field: str) -> list[str]:
+        """Choices of a node input, from ComfyUI's /object_info (checkpoints, ControlNets...)."""
+        data = http.get(f"{self.base(cfg)}/object_info/{node}", headers=self._headers(cfg), timeout=20,
+                        retry=http.RetryPolicy(max_retries=0)).json()
+        spec = (((data.get(node) or {}).get("input") or {}).get("required") or {}).get(field)
+        if not spec:
+            return []
+        first = spec[0]
+        if isinstance(first, list):                         # classic format: [[names...], {...}]
+            return [str(x) for x in first]
+        if first == "COMBO" and len(spec) > 1 and isinstance(spec[1], dict):   # newer: ["COMBO", {"options": [...]}]
+            return [str(x) for x in spec[1].get("options", [])]
+        return []
+
+    def _list_models(self, cfg):
+        return self.node_options(cfg, "CheckpointLoaderSimple", "ckpt_name")
+
+    def list_controlnets(self, cfg) -> list[str]:
+        try:
+            return self.node_options(cfg, "ControlNetLoader", "control_net_name")
+        except http.HTTPError as err:
+            raise b.classify_http_error(err, self.name) from None
+
     def _test_connection(self, cfg):
         try:
             resp = http.get(f"{self.base(cfg)}/system_stats", headers=self._headers(cfg), timeout=15,

@@ -367,3 +367,89 @@ def test_mock_provider_hidden_unless_enabled(monkeypatch):
     monkeypatch.setenv("ATS_ENABLE_TEST_PROVIDER", "1")
     _REGISTRY.clear()
     assert "MOCK" in [p.id for p in all_providers()]
+
+
+# ---------------------------------------------------------------------------
+# Audit additions
+# ---------------------------------------------------------------------------
+
+def _ok_png(handler, body):
+    return 200, {}, json.dumps({"data": [{"b64_json": base64.b64encode(PNG).decode()}]}).encode()
+
+
+def test_openai_sends_png_output_format_and_no_fidelity_for_gpt_image_2(server):
+    server.route("POST", "/v1/images/edits", _ok_png)
+    cfg = fast(providers.ProviderConfig(model="gpt-image-2", base_url=server.url + "/v1", api_key="sk-xxxxxxxxxxxx"))
+    OpenAIProvider().generate(req(), cfg)
+    r = server.requests[-1]
+    vals = {p[0]: p[3] for p in parse_multipart(r["headers"], r["body"]) if p[1] is None}
+    assert vals["output_format"] == b"png"
+    assert "input_fidelity" not in vals      # gpt-image-2 rejects it per the current reference
+
+
+def test_openai_drops_each_rejected_optional_parameter_once(server):
+    seen = []
+
+    def fn(handler, body):
+        seen.append(body)
+        if b'name="quality"' in body:
+            return 400, {}, json.dumps({"error": {"message": "Invalid value for 'quality'."}}).encode()
+        if b'name="output_format"' in body:
+            return 400, {}, json.dumps({"error": {"message": "Unknown parameter: 'output_format'."}}).encode()
+        return _ok_png(handler, body)
+    server.route("POST", "/v1/images/edits", fn)
+    cfg = fast(providers.ProviderConfig(model="gpt-image-1.5", base_url=server.url + "/v1", api_key="sk-xxxxxxxxxxxx"))
+    OpenAIProvider().generate(req(), cfg)
+    assert len(seen) == 3
+    assert b'name="input_fidelity"' in seen[-1]   # unrelated optional params are kept
+
+
+def test_openai_does_not_loop_on_unrelated_400(server):
+    calls = {"n": 0}
+
+    def fn(handler, body):
+        calls["n"] += 1
+        return 400, {}, json.dumps({"error": {"message": "Invalid image: must be PNG"}}).encode()
+    server.route("POST", "/v1/images/edits", fn)
+    cfg = fast(providers.ProviderConfig(model="gpt-image-1.5", base_url=server.url + "/v1", api_key="sk-xxxxxxxxxxxx"))
+    with pytest.raises(pb.ProviderError):
+        OpenAIProvider().generate(req(), cfg)
+    assert calls["n"] == 1
+
+
+def test_list_models_openai_gemini_comfyui(server):
+    server.route("GET", "/v1/models", lambda hd, b: (200, {}, json.dumps({"data": [
+        {"id": "gpt-image-1.5"}, {"id": "gpt-4o"}, {"id": "gpt-image-2"}]}).encode()))
+    cfg = fast(providers.ProviderConfig(base_url=server.url + "/v1", api_key="sk-xxxxxxxxxxxx"))
+    assert OpenAIProvider().list_models(cfg) == ["gpt-image-1.5", "gpt-image-2"]
+
+    pages = {"": {"models": [{"name": "models/gemini-3.1-flash-image",
+                              "supportedGenerationMethods": ["generateContent"]},
+                             {"name": "models/gemini-3-flash", "supportedGenerationMethods": ["generateContent"]}],
+                  "nextPageToken": "p2"},
+             "p2": {"models": [{"name": "models/gemini-2.5-flash-image",
+                                "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                               {"name": "models/imagen-x-image", "supportedGenerationMethods": ["predict"]}]}}
+
+    def gm(handler, body):
+        tok = handler.path.split("pageToken=")[1] if "pageToken=" in handler.path else ""
+        return 200, {}, json.dumps(pages[tok]).encode()
+    server.route("GET", "/v1beta/models", gm)
+    gcfg = fast(providers.ProviderConfig(base_url=server.url, api_key="AIza-test-123456"))
+    assert GeminiProvider().list_models(gcfg) == ["gemini-2.5-flash-image", "gemini-3.1-flash-image"]
+
+    server.route("GET", "/object_info/CheckpointLoaderSimple", lambda hd, b: (200, {}, json.dumps(
+        {"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["a.safetensors", "b.ckpt"], {}]}}}}).encode()))
+    server.route("GET", "/object_info/ControlNetLoader", lambda hd, b: (200, {}, json.dumps(
+        {"ControlNetLoader": {"input": {"required": {"control_net_name": ["COMBO", {"options": ["depth.pth"]}]}}}}
+    ).encode()))
+    ccfg = fast(providers.ProviderConfig(base_url=server.url))
+    assert ComfyUIProvider().list_models(ccfg) == ["a.safetensors", "b.ckpt"]
+    assert ComfyUIProvider().list_controlnets(ccfg) == ["depth.pth"]
+    with pytest.raises(pb.ProviderError) as e:
+        StabilityProvider().list_models(fast(providers.ProviderConfig(api_key="sk-stab-123456789")))
+    assert e.value.kind == "unsupported"
+
+
+def test_gemini_default_model_is_current_stable_id():
+    assert GeminiProvider.default_model == "gemini-3.1-flash-image"

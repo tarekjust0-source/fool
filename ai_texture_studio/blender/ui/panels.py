@@ -9,6 +9,9 @@ from ...core.pbr import MAP_PROVENANCE
 from .. import compat, credentials, layers, materials, prefs, runtime
 
 CATEGORY = "AI Texture"
+# Short provenance tags shown next to every layer.
+PROVENANCE_TAG = {"VIEW": "AI", "CORRECTION": "AI", "TILE": "AI", "GRAZING": "AI·low", "FILL": "extend",
+                  "BASE": "import", "PAINT": "paint", "MERGED": "mixed"}
 
 
 def _obj(context):
@@ -31,11 +34,14 @@ class ATS_UL_layers(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
         row.prop(item, "visible", text="", icon="HIDE_OFF" if item.visible else "HIDE_ON", emboss=False)
-        ico = {"VIEW": "VIEW_CAMERA", "FILL": "MOD_SMOOTH", "CORRECTION": "BRUSH_DATA", "BASE": "IMAGE_DATA",
-               "PAINT": "TPAINT_HLT", "TILE": "TEXTURE", "MERGED": "SELECT_EXTEND"}.get(item.kind, "IMAGE_DATA")
+        ico = {"VIEW": "VIEW_CAMERA", "GRAZING": "VIEW_PERSPECTIVE", "FILL": "MOD_SMOOTH",
+               "CORRECTION": "BRUSH_DATA", "BASE": "IMAGE_DATA", "PAINT": "TPAINT_HLT", "TILE": "TEXTURE",
+               "MERGED": "SELECT_EXTEND"}.get(item.kind, "IMAGE_DATA")
         row.prop(item, "name", text="", emboss=False, icon=ico)
+        row.label(text=PROVENANCE_TAG.get(item.kind, ""))
         if item.pending:
             row.label(text="pending", icon="TIME")
+        row.prop(item, "protected", text="", icon="LOCKED" if item.protected else "UNLOCKED", emboss=False)
         sub = row.row()
         sub.scale_x = 0.55
         sub.prop(item, "opacity", text="", slider=True)
@@ -390,9 +396,11 @@ class ATS_PT_layers(_Base, bpy.types.Panel):
             if ly.info:
                 for line in prefs._wrap(ly.info, 48):
                     box.label(text=line)
+            box.prop(ly, "protected", text="Protect from repainting")
             row = box.row(align=True)
             row.operator("ats.layer_edit", icon="TPAINT_HLT")
             row.operator("ats.layer_apply_edits", text="Apply Edits")
+        layout.operator("ats.provenance_map", icon="OVERLAY")
         row = layout.row(align=True)
         sub = row.row(align=True)
         sub.enabled = layers.can_undo(obj)
@@ -524,7 +532,10 @@ class ATS_PT_provider(_Base, bpy.types.Panel):
             return
         s = p.settings_for(prov.id)
         if prov.id != "MOCK":
-            layout.prop(s, "model")
+            row = layout.row(align=True)
+            row.prop(s, "model")
+            if prov.id != "STABILITY":
+                row.operator("ats.list_models", text="", icon="VIEWZOOM").provider = prov.id
         if prov.requires_key or prov.id == "COMFYUI":
             row = layout.row(align=True)
             row.label(text=credentials.key_status(prov.id, s)[:48], icon="LOCKED")

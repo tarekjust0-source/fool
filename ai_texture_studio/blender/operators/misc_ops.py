@@ -105,7 +105,53 @@ class ATS_OT_set_model(bpy.types.Operator):
     model: StringProperty()
 
     def execute(self, context):
-        prefs.get_prefs(context).settings_for(self.provider).model = self.model
+        p = prefs.get_prefs(context)
+        if self.provider == "COMFYUI_CONTROLNET":
+            p.comfyui.controlnet = self.model
+        else:
+            p.settings_for(self.provider).model = self.model
+        return {"FINISHED"}
+
+
+_MODEL_CACHE: dict = {}
+
+
+class ATS_OT_list_models(bpy.types.Operator):
+    """Ask the provider which image models this account/server can use, then pick one"""
+
+    bl_idname = "ats.list_models"
+    bl_label = "List Models"
+    provider: StringProperty()
+
+    def invoke(self, context, event):
+        pid = "COMFYUI" if self.provider == "COMFYUI_CONTROLNET" else self.provider
+        prov, cfg = run_safely(self, prefs.provider_config, context, pid) or (None, None)
+        if prov is None:
+            return {"CANCELLED"}
+        ok, msg = prefs.network_allowed(prov, cfg)
+        if not ok:
+            self.report({"ERROR"}, msg)
+            return {"CANCELLED"}
+        try:
+            names = prov.list_controlnets(cfg) if self.provider == "COMFYUI_CONTROLNET" else prov.list_models(cfg)
+        except providers.ProviderError as exc:
+            self.report({"ERROR"}, exc.user_message())
+            return {"CANCELLED"}
+        if not names:
+            self.report({"WARNING"}, "The provider returned no image models for this account/server")
+            return {"CANCELLED"}
+        _MODEL_CACHE[self.provider] = names
+        return context.window_manager.invoke_popup(self, width=360)
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        col.label(text="Available models (click to use):")
+        for name in _MODEL_CACHE.get(self.provider, [])[:60]:
+            op = col.operator("ats.set_model", text=name)
+            op.provider = self.provider
+            op.model = name
+
+    def execute(self, context):
         return {"FINISHED"}
 
 
@@ -214,5 +260,6 @@ class ATS_OT_open_prefs(bpy.types.Operator):
         return {"FINISHED"}
 
 
-CLASSES = (ATS_OT_analyze, ATS_OT_create_uv, ATS_OT_load_reference, ATS_OT_set_model, ATS_OT_set_api_key,
+CLASSES = (ATS_OT_analyze, ATS_OT_create_uv, ATS_OT_load_reference, ATS_OT_set_model, ATS_OT_list_models,
+           ATS_OT_set_api_key,
            ATS_OT_clear_api_key, ATS_OT_reset_consent, ATS_OT_test_connection, ATS_OT_open_prefs)

@@ -381,3 +381,38 @@ def schedule_recomposite(obj, delay: float = 0.15):
         run()
     else:
         bpy.app.timers.register(run, first_interval=delay)
+
+
+# Provenance colours (RGB 0..1) used by the provenance map.
+PROVENANCE_COLORS = {
+    "AI": (0.20, 0.75, 0.30),        # VIEW / CORRECTION / TILE
+    "AI_LOW": (0.95, 0.80, 0.15),    # GRAZING
+    "EXTEND": (0.90, 0.20, 0.20),    # FILL (not AI)
+    "USER": (0.25, 0.45, 0.95),      # BASE / PAINT / MERGED
+    "NONE": (0.10, 0.10, 0.10),      # nothing painted
+}
+_KIND_CLASS = {"VIEW": "AI", "CORRECTION": "AI", "TILE": "AI", "GRAZING": "AI_LOW", "FILL": "EXTEND",
+               "BASE": "USER", "PAINT": "USER", "MERGED": "USER"}
+
+
+def provenance(obj, size: int):
+    """Which kind of layer is visible on top at every texel.
+
+    Returns (rgb image (S,S,3) float, fractions dict over UV-covered texels).
+    """
+    top = np.full((size, size), "NONE", dtype=object)
+    for ly in obj.ats.layers:                  # bottom -> top; later layers win
+        if not ly.visible or ly.opacity <= 0:
+            continue
+        try:
+            a = layer_pixels(obj, ly, size)[..., 3].astype(np.float32) / 255.0 * ly.opacity
+        except FileNotFoundError:
+            continue
+        top[a > 0.5] = _KIND_CLASS.get(ly.kind, "USER")
+    img = np.zeros((size, size, 3), np.float32)
+    for k, c in PROVENANCE_COLORS.items():
+        img[top == k] = c
+    covered = covered_mask(obj, size)
+    n = max(int(covered.sum()), 1)
+    fractions = {k: float(((top == k) & covered).sum()) / n for k in PROVENANCE_COLORS}
+    return img, fractions

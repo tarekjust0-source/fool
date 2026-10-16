@@ -434,3 +434,38 @@ def test_thin_two_sided_object_keeps_front_and_back_separate():
     back_cell = (slice(140, 240), slice(95, 160))
     assert views["Front"][front_cell][..., 3].mean() > 200 and views["Front"][back_cell][..., 3].mean() < 5
     assert views["Back"][back_cell][..., 3].mean() > 200
+
+
+def test_non_square_provider_output_is_cropped_not_stretched():
+    """A 1536x1024 answer to a square request must keep the centre undistorted."""
+    mesh = cube()
+    cam = camera.preset_camera("FRONT", camera.VIEW_PRESETS["FRONT"], mesh.positions, 256)
+    st = projection.TextureState(mesh, 128)
+    ps = projection.ProjectionSettings(texture_size=128, view_size=256, auto_align=False)
+    plan = projection.plan_view(mesh, cam, st, ps)
+    sq = np.zeros((256, 256, 3), np.float32)
+    sq[:, 120:136] = 1.0                                  # vertical stripe in the centre
+    wide = np.zeros((256, 384, 3), np.float32)
+    wide[:, 64:320] = sq                                  # same content, padded left/right
+    gen, info = projection.prepare_generated(plan, imageio.to_uint8(wide), ps, may_misalign=True)
+    assert info["cropped_to_aspect"] == [384, 256]
+    assert np.abs(gen - sq).max() < 0.02
+
+
+def test_refine_prompt_includes_design_context():
+    cp = prompting.compose("replace with rusty iron", "", prompting.StyleSettings(), purpose="refine",
+                           design_context="weathered dark iron armor")
+    assert "replace with rusty iron" in cp.prompt and "weathered dark iron armor" in cp.prompt
+    gen = prompting.compose("x", "", prompting.StyleSettings(), purpose="first_view", design_context="y armor")
+    assert "y armor" not in gen.prompt
+
+
+def test_3d_fill_does_not_bleed_across_uv_islands():
+    """Hidden texels take colour from the nearest painted surface in 3D, not from UV neighbours."""
+    rng = np.random.default_rng(3)
+    pts = rng.random((4000, 3))
+    col = np.where(pts[:, :1] < 0.5, [[1.0, 0, 0]], [[0, 0, 1.0]]).astype(np.float32)
+    valid = rng.random(4000) > 0.3
+    filled = projection.fill_by_3d_proximity(pts, np.where(valid[:, None], col, 0.5), valid)
+    far = ~valid & (np.abs(pts[:, 0] - 0.5) > 0.1)
+    assert np.abs(filled[far] - col[far]).max() < 1e-6

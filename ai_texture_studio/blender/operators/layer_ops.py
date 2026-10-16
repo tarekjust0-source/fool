@@ -349,6 +349,27 @@ class ATS_OT_cleanup_files(bpy.types.Operator):
         return {"FINISHED"}
 
 
-CLASSES = (ATS_OT_layers_resize, ATS_OT_cleanup_files, ATS_OT_layer_op, ATS_OT_layers_undo, ATS_OT_layer_import_existing, ATS_OT_layer_add_paint,
+class ATS_OT_provenance_map(_LayerOp, bpy.types.Operator):
+    """Show on the model where pixels come from: green = AI, yellow = AI at low angle,
+red = colour extension (not AI), blue = imported/painted, dark = nothing"""
+
+    bl_idname = "ats.provenance_map"
+    bl_label = "Show Provenance Map"
+
+    def execute(self, context):
+        obj = active_mesh(context)
+        size = obj.ats.texture_size
+        img_arr, frac = layers.provenance(obj, size)
+        name = f"ATS_{obj.name}_Provenance"
+        img = storage.get_or_create_image(name, size)
+        compat.array_to_image(img, img_arr)
+        show_image(context, img)
+        self.report({"INFO"}, "AI {:.0%} | AI low-angle {:.0%} | colour-extended {:.0%} | imported/painted {:.0%} | "
+                              "unpainted {:.0%}".format(frac["AI"], frac["AI_LOW"], frac["EXTEND"], frac["USER"],
+                                                        frac["NONE"]))
+        return {"FINISHED"}
+
+
+CLASSES = (ATS_OT_provenance_map, ATS_OT_layers_resize, ATS_OT_cleanup_files, ATS_OT_layer_op, ATS_OT_layers_undo, ATS_OT_layer_import_existing, ATS_OT_layer_add_paint,
            ATS_OT_layer_edit, ATS_OT_layer_apply_edits, ATS_OT_recomposite, ATS_OT_history_restore,
            ATS_OT_history_clear)

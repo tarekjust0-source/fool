@@ -24,6 +24,7 @@ from . import base as b
 
 SIZES = ("1024x1024", "1536x1024", "1024x1536")
 FIDELITY_MODELS = ("gpt-image-1", "gpt-image-1.5")
+OPTIONAL_PARAMS = ("quality", "output_format", "input_fidelity")
 
 
 class OpenAIProvider(b.Provider):
@@ -64,17 +65,40 @@ class OpenAIProvider(b.Provider):
         quality = cfg.options.get("quality", "high")
         try:
             if req.image is None and not req.references:
-                payload = {"model": model, "prompt": self._prompt(req), "size": self._size(req),
-                           "quality": quality, "n": 1}
-                resp = http.post_json(f"{self.base(cfg)}/images/generations", payload, headers=self._headers(cfg),
-                                      timeout=cfg.timeout, retry=self.retry_policy(cfg), cancel=cancel)
+                resp = self._generations(req, cfg, model, quality, cancel, set(OPTIONAL_PARAMS))
             else:
-                resp = self._edit(req, cfg, model, quality, cancel, with_fidelity=True)
+                resp = self._edit(req, cfg, model, quality, cancel, set(OPTIONAL_PARAMS))
         except http.HTTPError as err:
             raise b.classify_http_error(err, self.name) from None
         return self._parse(resp, model, cancel, cfg)
 
-    def _edit(self, req, cfg, model, quality, cancel, *, with_fidelity):
+    @staticmethod
+    def _rejected_param(err: http.HTTPError, sent: set) -> str | None:
+        """Name of an optional parameter the server rejected (400), if any."""
+        if err.status != 400:
+            return None
+        text = err.text(2000)
+        for name in sent:
+            if name in text:
+                return name
+        return None
+
+    def _generations(self, req, cfg, model, quality, cancel, optional: set):
+        payload = {"model": model, "prompt": self._prompt(req), "size": self._size(req), "n": 1}
+        if "quality" in optional:
+            payload["quality"] = quality
+        if "output_format" in optional:
+            payload["output_format"] = "png"
+        try:
+            return http.post_json(f"{self.base(cfg)}/images/generations", payload, headers=self._headers(cfg),
+                                  timeout=cfg.timeout, retry=self.retry_policy(cfg), cancel=cancel)
+        except http.HTTPError as err:
+            bad = self._rejected_param(err, optional & set(payload))
+            if bad:
+                return self._generations(req, cfg, model, quality, cancel, optional - {bad})
+            raise
+
+    def _edit(self, req, cfg, model, quality, cancel, optional: set):
         first = req.image if req.image is not None else req.references[0]
         refs = req.references if req.image is not None else req.references[1:]
         first = imageio.rgb(first)
@@ -83,9 +107,15 @@ class OpenAIProvider(b.Provider):
             http.MultipartField("prompt", self._prompt(req)),
             http.MultipartField("n", "1"),
             http.MultipartField("size", self._size(req)),
-            http.MultipartField("quality", quality),
             http.MultipartField("image[]", b.png_bytes(first), "render.png", "image/png"),
         ]
+        sent = set()
+        if "quality" in optional:
+            fields.append(http.MultipartField("quality", quality))
+            sent.add("quality")
+        if "output_format" in optional:
+            fields.append(http.MultipartField("output_format", "png"))
+            sent.add("output_format")
         for i, ref in enumerate(refs[:8]):
             fields.append(http.MultipartField("image[]", b.png_bytes(imageio.rgb(ref)), f"reference_{i}.png",
                                               "image/png"))
@@ -94,17 +124,20 @@ class OpenAIProvider(b.Provider):
             if m.shape != first.shape[:2]:
                 m = imageio.resize_nearest(m, first.shape[1], first.shape[0])
             fields.append(http.MultipartField("mask", b.mask_png_alpha(m, first), "mask.png", "image/png"))
-        fidelity = None
-        if with_fidelity and any(model == fm for fm in FIDELITY_MODELS):
+        # input_fidelity exists only for GPT Image 1 / 1.5 (gpt-image-2 always uses high fidelity
+        # and rejects the parameter).
+        if "input_fidelity" in optional and any(model == fm for fm in FIDELITY_MODELS):
             fidelity = "high" if req.strength <= 0.6 or req.references else "low"
             fields.append(http.MultipartField("input_fidelity", fidelity))
+            sent.add("input_fidelity")
         try:
             return http.post_multipart(f"{self.base(cfg)}/images/edits", fields, headers=self._headers(cfg),
                                        timeout=cfg.timeout, retry=self.retry_policy(cfg), cancel=cancel)
         except http.HTTPError as err:
-            # Some model versions reject optional parameters: retry once without.
-            if fidelity and err.status == 400 and "input_fidelity" in err.text(2000):
-                return self._edit(req, cfg, model, quality, cancel, with_fidelity=False)
+            # Model versions differ in the optional parameters they accept: retry once per rejected one.
+            bad = self._rejected_param(err, sent)
+            if bad:
+                return self._edit(req, cfg, model, quality, cancel, optional - {bad})
             raise
 
     def _parse(self, resp: http.Response, model: str, cancel, cfg) -> b.ImageResult:
@@ -131,6 +164,13 @@ class OpenAIProvider(b.Provider):
         if isinstance(data.get("usage"), dict):
             meta["usage"] = data["usage"]
         return b.ImageResult(arr, self.id, model, None, meta)
+
+    def _list_models(self, cfg):
+        self.check_problems(cfg)
+        data = http.get(f"{self.base(cfg)}/models", headers=self._headers(cfg), timeout=30,
+                        retry=http.RetryPolicy(max_retries=0)).json()
+        ids = [m.get("id", "") for m in (data.get("data") or []) if isinstance(m, dict)]
+        return sorted(i for i in ids if i.startswith("gpt-image") or i.startswith("chatgpt-image"))
 
     def _test_connection(self, cfg):
         self.check_problems(cfg)

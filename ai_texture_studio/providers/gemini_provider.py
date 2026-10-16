@@ -22,8 +22,10 @@ class GeminiProvider(b.Provider):
     name = "Google Gemini Image"
     description = "Hosted Gemini image models; multi-image input for consistent design across views."
     default_base_url = "https://generativelanguage.googleapis.com"
-    default_model = "gemini-2.5-flash-image"
-    model_presets = ("gemini-2.5-flash-image", "gemini-3-pro-image-preview")
+    # gemini-3.1-flash-image is the stable id in Google's model list (Oct 2026);
+    # gemini-2.5-flash-image is scheduled for retirement. Use "List Models" for others.
+    default_model = "gemini-3.1-flash-image"
+    model_presets = ("gemini-3.1-flash-image", "gemini-2.5-flash-image")
     key_env_var = "GEMINI_API_KEY"
     mask_as_image = True
     data_notice = ("Sends view renders of the selected object, masks, your prompt and any reference image to "
@@ -102,6 +104,23 @@ class GeminiProvider(b.Provider):
                                       retryable=False)
         hint = (" Model said: " + " ".join(texts)[:300]) if texts else ""
         raise b.ProviderError("invalid_response", f"{self.name}: response contained no image.{hint}")
+
+    def _list_models(self, cfg):
+        self.check_problems(cfg)
+        out, token = [], ""
+        for _ in range(20):                       # pagination guard
+            url = f"{self.base(cfg)}/v1beta/models?pageSize=1000" + (f"&pageToken={token}" if token else "")
+            data = http.get(url, headers={"x-goog-api-key": cfg.api_key}, timeout=30,
+                            retry=http.RetryPolicy(max_retries=0)).json()
+            for m in data.get("models") or []:
+                name = (m.get("name") or "").removeprefix("models/")
+                methods = m.get("supportedGenerationMethods")
+                if "image" in name and (methods is None or "generateContent" in methods):
+                    out.append(name)
+            token = data.get("nextPageToken") or ""
+            if not token:
+                break
+        return sorted(set(out))
 
     def _test_connection(self, cfg):
         self.check_problems(cfg)

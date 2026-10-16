@@ -68,6 +68,10 @@ def register():
     bpy.app.handlers.save_post.append(_save_post)
     bpy.app.handlers.load_post.append(_load_post)
     providers.base.FALLBACK_DECODER = _decoder
+    try:
+        storage.cleanup_stale_sessions()
+    except OSError:
+        pass
     if bpy.app.background:
         _init_prefs()
     else:

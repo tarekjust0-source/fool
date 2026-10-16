@@ -139,7 +139,8 @@ TASK_TEXT = {
 
 
 def compose(user_prompt: str, user_negative: str, style: StyleSettings, *, purpose: str,
-            view_name: str = "front", has_reference: bool = False, has_mask_image: bool = False) -> ComposedPrompt:
+            view_name: str = "front", has_reference: bool = False, has_mask_image: bool = False,
+            design_context: str = "") -> ComposedPrompt:
     if purpose not in TASK_TEXT:
         raise ValueError(f"Unknown purpose {purpose}")
     st = STYLES.get(style.style, STYLES["STYLIZED"])
@@ -148,6 +149,8 @@ def compose(user_prompt: str, user_negative: str, style: StyleSettings, *, purpo
         subject_parts.append(style.art_direction.strip())
     subject = "; ".join(subject_parts)
     lines = [TASK_TEXT[purpose].format(view=view_name, subject=subject)]
+    if design_context.strip() and purpose in ("refine", "refine_uv"):
+        lines.append(f"The object's overall design is: {design_context.strip()}. Keep the edit consistent with it.")
     lines.append(f"Art style: {st[1]}.")
     mat = MATERIAL_WORDS.get(style.material, "")
     if mat:

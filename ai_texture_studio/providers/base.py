@@ -32,7 +32,8 @@ MAY_MISALIGN = "may_misalign"        # output can drift spatially; enable auto-a
 
 ERROR_HINTS = {
     "auth": "Check the API key in Preferences > Add-ons > AI Texture Studio.",
-    "config": "Check the provider settings (model name, URL, workflow).",
+    "config": "Check the provider settings (model name, URL, workflow). 'List Models' shows the model ids "
+              "your account can use.",
     "rate_limit": "The provider is rate limiting requests. Wait a moment and press Retry.",
     "quota": "Your account has no remaining credit/quota for this provider.",
     "network": "Could not reach the provider. Check your internet connection / proxy and Blender's "
@@ -77,6 +78,7 @@ class ImageRequest:
     seed: int | None = None
     strength: float = 0.7            # 0 = adhere to input, 1 = follow prompt freely
     style_preset: str | None = None
+    camera: dict | None = None       # local metadata (view/proj matrices); never sent by built-in providers
 
     def summary(self) -> dict:
         """What will be transmitted (for consent dialogs / history)."""
@@ -151,6 +153,17 @@ class Provider:
             return self._test_connection(cfg)
         except http.HTTPError as err:
             raise classify_http_error(err, self.name) from None
+
+    def list_models(self, cfg: ProviderConfig) -> list[str]:
+        """Model ids this account/server can use for images (where the API offers a listing)."""
+        try:
+            return self._list_models(cfg)
+        except http.HTTPError as err:
+            raise classify_http_error(err, self.name) from None
+
+    def _list_models(self, cfg: ProviderConfig) -> list[str]:
+        raise ProviderError("unsupported", f"{self.name} has no model listing; it uses fixed endpoints.",
+                            retryable=False)
 
     # Subclasses implement these two.
     def _generate(self, req: ImageRequest, cfg: ProviderConfig, cancel=None) -> ImageResult:
