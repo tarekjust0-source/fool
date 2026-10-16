@@ -21,8 +21,16 @@ MATERIALS = [
 PATH_OPTS = {"PATH_SUPPORTS_BLEND_RELATIVE"} if bpy.app.version >= (5, 0, 0) else set()
 
 PRESET_ITEMS = [(k, v, "") for k, v in VIEW_LABELS.items()]
-LAYER_KINDS = [("VIEW", "View", ""), ("FILL", "Fill", ""), ("CORRECTION", "Correction", ""),
-               ("BASE", "Base", ""), ("PAINT", "Paint", ""), ("TILE", "Tile", ""), ("MERGED", "Merged", "")]
+LAYER_KINDS = [("VIEW", "View", "AI-generated, projected from one camera"),
+               ("GRAZING", "Low-angle", "AI-generated pixels seen only at flat angles (low confidence)"),
+               ("FILL", "Fill", "Colour extension into surfaces no camera saw (not AI-generated)"),
+               ("CORRECTION", "Correction", "AI-generated local correction"),
+               ("BASE", "Base", "Imported existing texture"), ("PAINT", "Paint", "Hand-painted"),
+               ("TILE", "Tile", "AI-generated tileable swatch"), ("MERGED", "Merged", "Merged layers")]
+# Kinds that never count as "already textured" when planning views: better views may repaint them.
+NON_CONFIDENT_KINDS = {"GRAZING", "FILL"}
+# Kinds protected from seam blending / repainting by default.
+PROTECTED_KINDS = {"BASE", "PAINT", "CORRECTION"}
 
 
 def _redraw_composite(self, context):
@@ -39,6 +47,7 @@ class ATS_ViewItem(bpy.types.PropertyGroup):
     custom_view: FloatVectorProperty(size=16)
     custom_proj: FloatVectorProperty(size=16)
     custom_ortho: BoolProperty(default=False)
+    uid: StringProperty()         # stable key linking a view to the layers it produced
     status: StringProperty()
     debug_dir: StringProperty()   # folder with render/mask/generated/aligned PNGs of the last run
     debug_object: StringProperty()
@@ -58,6 +67,9 @@ class ATS_LayerItem(bpy.types.PropertyGroup):
     created: StringProperty()
     info: StringProperty()
     history_uid: StringProperty()
+    view_key: StringProperty(description="Multi-view camera that produced this layer")
+    protected: BoolProperty(name="Protect", default=False, update=_redraw_composite,
+                            description="Generation and seam blending never repaint pixels of this layer")
 
 
 class ATS_HistoryItem(bpy.types.PropertyGroup):

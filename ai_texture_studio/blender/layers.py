@@ -19,6 +19,7 @@ import numpy as np
 
 from ..core import compositing, imageio, masks, pbr
 from . import compat, storage
+from .props import NON_CONFIDENT_KINDS, PROTECTED_KINDS
 
 UNDO_DEPTH = 40
 _pending_recomposite: set[str] = set()
@@ -29,7 +30,7 @@ _pending_recomposite: set[str] = set()
 # ---------------------------------------------------------------------------
 
 _LAYER_FIELDS = ("uid", "name", "kind", "visible", "opacity", "blend", "filepath", "pending", "created", "info",
-                 "history_uid")
+                 "history_uid", "view_key", "protected")
 
 
 def snapshot(obj) -> list:
@@ -109,7 +110,8 @@ def texture_size(obj, scene_settings=None) -> int:
 
 
 def add_layer(obj, pixels: np.ndarray | None, *, name: str, kind: str, info: str = "", filepath: str = "",
-              pending: bool = False, history_uid: str = "", index: int | None = None, push: bool = True):
+              pending: bool = False, history_uid: str = "", index: int | None = None, push: bool = True,
+              view_key: str = "", protected: bool | None = None):
     """Add a layer. ``pixels`` (uint8 RGBA) is written to disk unless ``filepath`` given."""
     st = obj.ats
     if push:
@@ -127,6 +129,8 @@ def add_layer(obj, pixels: np.ndarray | None, *, name: str, kind: str, info: str
     ly.pending = pending
     ly.created = time.strftime("%Y-%m-%d %H:%M:%S")
     ly.history_uid = history_uid
+    ly.view_key = view_key
+    ly.protected = (kind in PROTECTED_KINDS) if protected is None else protected
     if index is not None:
         st.layers.move(len(st.layers) - 1, index)
         st.active_layer = index
@@ -236,6 +240,63 @@ def missing_layer_files(obj) -> list[str]:
 def current_texture(obj, size: int, *, include_pending=True):
     """Composite of visible layers -> (rgb float (S,S,3), alpha float (S,S))."""
     return compositing.composite(visible_inputs(obj, size, include_pending=include_pending), size)
+
+
+def planning_texture(obj, size: int, *, exclude_view_key: str = "", protected_only: bool = False):
+    """What a new generation should treat as already painted.
+
+    * low-confidence layers (grazing-angle pixels, colour-extension fill) are
+      left out, so a better or newly added view can repaint those texels;
+    * layers of ``exclude_view_key`` are left out (single-view regeneration);
+    * ``protected_only`` keeps only protected layers ("Start From Scratch").
+
+    Returns (rgb, alpha, protected, grazing): ``protected`` (S,S) bool marks
+    texels of protected layers, which projection never writes; ``grazing`` is
+    the RGBA of low-angle AI layers (or None), kept unless a view improves them.
+    """
+    inputs, prot_inputs, grazing_inputs = [], [], []
+    for ly in obj.ats.layers:
+        if not ly.visible or ly.opacity <= 0 or ly.pending:
+            continue
+        if ly.kind == "GRAZING" and not protected_only:
+            try:
+                grazing_inputs.append(compositing.LayerInput(layer_pixels(obj, ly, size), ly.opacity))
+            except FileNotFoundError:
+                pass
+            continue
+        if ly.kind in NON_CONFIDENT_KINDS:
+            continue
+        if exclude_view_key and ly.view_key == exclude_view_key:
+            continue
+        if protected_only and not ly.protected:
+            continue
+        try:
+            px = layer_pixels(obj, ly, size)
+        except FileNotFoundError:
+            continue
+        li = compositing.LayerInput(px, ly.opacity, ly.blend)
+        inputs.append(li)
+        if ly.protected:
+            prot_inputs.append(li)
+    rgb, alpha = compositing.composite(inputs, size)
+    if prot_inputs:
+        _, pa = compositing.composite(prot_inputs, size)
+        protected = pa > 0.5
+    else:
+        protected = np.zeros((size, size), bool)
+    grazing = None
+    if grazing_inputs:
+        g_rgb, g_a = compositing.composite(grazing_inputs, size)
+        grazing = np.concatenate([g_rgb, g_a[..., None]], axis=2)
+    return rgb, alpha, protected, grazing
+
+
+def covered_mask(obj, size: int) -> np.ndarray:
+    """Texels covered by the object's working UV map (for tests/diagnostics)."""
+    from ..core import raster
+    from . import meshio
+    mesh = meshio.extract(obj, uv_name=obj.ats.uv_map or None, use_modifiers=False)
+    return raster.rasterize_uv(mesh.tri_uvs, size).covered_mask()
 
 
 # ---------------------------------------------------------------------------

@@ -50,7 +50,11 @@ class ProjectionSettings:
 class TextureState:
     """In-memory texture being built (UV space, row 0 = top)."""
 
-    def __init__(self, mesh: MeshData, size: int, rgb: np.ndarray | None = None, alpha: np.ndarray | None = None):
+    def __init__(self, mesh: MeshData, size: int, rgb: np.ndarray | None = None, alpha: np.ndarray | None = None,
+                 protected: np.ndarray | None = None, grazing: np.ndarray | None = None):
+        """``rgb``/``alpha``: confident paint.  ``protected``: texels never written.
+        ``grazing``: RGBA of earlier low-angle AI pixels - shown as context and
+        kept unless a view paints those texels from a better angle."""
         self.size = size
         self.uv = raster.rasterize_uv(mesh.tri_uvs, size)
         self.rgb = np.zeros((size, size, 3), np.float32) if rgb is None else imageio.to_float(rgb)[..., :3].copy()
@@ -62,6 +66,24 @@ class TextureState:
         n = self.uv.index.size
         self.fallback_rgb = np.zeros((n, 3), np.float32)
         self.fallback_w = np.zeros(n, np.float32)
+        # Texels of protected layers (imported base, accepted corrections, paint):
+        # never written by projection, not even by seam blending.
+        prot = np.zeros((size, size), bool) if protected is None else np.asarray(protected, bool)
+        if prot.shape != (size, size):
+            prot = imageio.resize_nearest(prot, size, size)
+        self.protected_flat = prot.reshape(-1)[self.uv.index]
+        self.grazing_alpha = np.zeros((size, size), np.float32)
+        self.grazing_rgb = np.zeros((size, size, 3), np.float32)
+        if grazing is not None:
+            g = imageio.to_float(grazing)
+            if g.shape[:2] != (size, size):
+                g = imageio.resize(g, size, size)
+            self.grazing_rgb = g[..., :3].copy()
+            self.grazing_alpha = g[..., 3].copy()
+            ga = self.grazing_alpha.reshape(-1)[self.uv.index]
+            has = ga > 0.5
+            self.fallback_rgb[has] = self.grazing_rgb.reshape(-1, 3)[self.uv.index][has]
+            self.fallback_w[has] = 0.05            # any real view sample beats an old low-angle one
         self._P = mesh.texel_points(self.uv.tri, self.uv.bary)
         self._N = mesh.tri_normals[self.uv.tri].astype(np.float64)
         self._display = None
@@ -80,9 +102,13 @@ class TextureState:
     def display(self, gutter_px: int):
         """Gutter-padded copies used when sampling the texture for renders."""
         if self._display is None:
-            valid = self.alpha > 0.5
-            col, _ = masks.fill_gutter(self.rgb, valid, gutter_px)
-            a, _ = masks.fill_gutter(self.alpha, valid, gutter_px)
+            ga = self.grazing_alpha * (1 - self.alpha)        # low-angle pixels sit below confident paint
+            alpha = self.alpha + ga
+            rgb = self.rgb * self.alpha[..., None] + self.grazing_rgb * ga[..., None]
+            rgb = np.where(alpha[..., None] > 1e-6, rgb / np.maximum(alpha, 1e-6)[..., None], self.rgb)
+            valid = alpha > 0.5
+            col, _ = masks.fill_gutter(rgb, valid, gutter_px)
+            a, _ = masks.fill_gutter(alpha, valid, gutter_px)
             self._display = (col, a)
         return self._display
 
@@ -239,8 +265,8 @@ def project_view(mesh: MeshData, plan: ViewPlan, gen: np.ndarray, state: Texture
         in_ai = imageio.sample_nearest(plan.ai_mask, x, y)
         bd = imageio.sample_nearest(band_dist, x, y)
         color = imageio.sample_bilinear(gen, x, y)
-        untex = alpha_flat[sl] < 0.5
-        good = vis & in_ai & (facing >= s.min_facing) & (e > 0.25)
+        untex = (alpha_flat[sl] < 0.5) & ~state.protected_flat[sl]
+        good = vis & in_ai & (facing >= s.min_facing) & (e > 0.25) & ~state.protected_flat[sl]
         claim = good & untex
         band = good & ~untex & (bd > 0)
         ramp = np.clip(1.0 - bd / float(max(s.band_px, 1)), 0.0, 1.0) * 0.85
@@ -267,34 +293,82 @@ def project_view(mesh: MeshData, plan: ViewPlan, gen: np.ndarray, state: Texture
     return layer, stats
 
 
-def finalize_fill(state: TextureState, s: ProjectionSettings):
-    """Build the fill layer: grazing-angle fallbacks + push-pull for unseen.
+def fill_by_3d_proximity(points: np.ndarray, colors: np.ndarray, valid: np.ndarray, *, levels: int = 9) -> np.ndarray:
+    """Colour for every invalid point from the nearest valid surface in 3D.
 
-    Returns (layer RGBA float or None, stats).
+    A voxel pyramid (finest 2^(levels-1) cells per axis) averages valid
+    colours; each invalid point takes the finest occupied voxel containing it.
+    Unlike a UV-space fill, this never pulls colour from an unrelated UV
+    island that merely happens to be adjacent in the atlas.
+    """
+    out = colors.astype(np.float32).copy()
+    todo = ~valid
+    if not todo.any() or not valid.any():
+        if not valid.any():
+            out[:] = 0.5
+        return out
+    lo = points.min(axis=0)
+    span = max(float((points.max(axis=0) - lo).max()), 1e-9)
+    norm = (points - lo) / span                       # 0..1
+    vp, vc = norm[valid], colors[valid].astype(np.float64)
+    remaining = np.flatnonzero(todo)
+    for lvl in range(levels - 1, -1, -1):
+        if remaining.size == 0:
+            break
+        res = 1 << lvl
+        def key(p):
+            q = np.minimum((p * res).astype(np.int64), res - 1)
+            return (q[:, 0] * res + q[:, 1]) * res + q[:, 2]
+        k_valid = key(vp)
+        uniq, inv = np.unique(k_valid, return_inverse=True)
+        sums = np.zeros((uniq.size, 3))
+        np.add.at(sums, inv, vc)
+        counts = np.bincount(inv, minlength=uniq.size).astype(np.float64)
+        means = sums / counts[:, None]
+        kq = key(norm[remaining])
+        pos = np.searchsorted(uniq, kq)
+        pos = np.minimum(pos, uniq.size - 1)
+        hit = uniq[pos] == kq
+        out[remaining[hit]] = means[pos[hit]]
+        remaining = remaining[~hit]
+    if remaining.size:
+        out[remaining] = vc.mean(axis=0)
+    return out
+
+
+def finalize_fill(state: TextureState, s: ProjectionSettings):
+    """Layers for texels no view claimed.
+
+    Returns (grazing_layer, fill_layer, stats); each layer is RGBA float or None.
+    * grazing_layer: AI pixels seen only at flat angles (low confidence);
+    * fill_layer: colour extension (NOT AI-generated) for texels no camera
+      saw at all, using the nearest painted surface in 3D.
     """
     size = state.size
     a = state.alpha_flat()
-    untex = a < 0.5
+    untex = (a < 0.5) & ~state.protected_flat
     fb = untex & (state.fallback_w > 0)
     unseen = untex & ~fb
     n = max(state.uv.index.size, 1)
     stats = {"fallback_fraction": float(fb.sum()) / n, "unseen_fraction": float(unseen.sum()) / n}
-    if not fb.any() and not (s.fill_unseen and unseen.any()):
-        return None, stats
-    layer = np.zeros((size * size, 4), np.float32)
     idx = state.uv.index
-    layer[idx[fb], :3] = state.fallback_rgb[fb]
-    layer[idx[fb], 3] = 1.0
+    grazing = None
+    if fb.any():
+        g = np.zeros((size * size, 4), np.float32)
+        g[idx[fb], :3] = state.fallback_rgb[fb]
+        g[idx[fb], 3] = 1.0
+        grazing = g.reshape(size, size, 4)
+    fill = None
     if s.fill_unseen and unseen.any():
-        valid = np.zeros(size * size, bool)
-        valid[idx[~untex]] = True
-        valid[idx[fb]] = True
-        cur = state.rgb.reshape(-1, 3).copy()
-        cur[idx[fb]] = state.fallback_rgb[fb]
-        filled = masks.push_pull_fill(cur.reshape(size, size, 3), valid.reshape(size, size)).reshape(-1, 3)
-        layer[idx[unseen], :3] = filled[idx[unseen]]
-        layer[idx[unseen], 3] = 1.0
-    return layer.reshape(size, size, 4), stats
+        cur = state.rgb.reshape(-1, 3)[idx].copy()
+        cur[fb] = state.fallback_rgb[fb]
+        valid = ~unseen & ((a >= 0.5) | fb | state.protected_flat)
+        filled = fill_by_3d_proximity(state.points, cur, valid)
+        f = np.zeros((size * size, 4), np.float32)
+        f[idx[unseen], :3] = filled[unseen]
+        f[idx[unseen], 3] = 1.0
+        fill = f.reshape(size, size, 4)
+    return grazing, fill, stats
 
 
 def project_image_from_camera(mesh: MeshData, cam: ViewCamera, image: np.ndarray, uv_mask: np.ndarray,

@@ -40,6 +40,7 @@ class ATS_OT_views_preset(bpy.types.Operator):
             v.preset = key
             v.enabled = on
             v.label = camlib.VIEW_LABELS[key]
+            services.view_uid(v)
         sc.active_view = 0
         return {"FINISHED"}
 
@@ -67,6 +68,7 @@ class ATS_OT_view_add_viewport(bpy.types.Operator):
         v.custom_view = [float(x) for x in np.asarray(cam.view).reshape(-1)]
         v.custom_proj = [float(x) for x in np.asarray(cam.proj).reshape(-1)]
         v.custom_ortho = cam.ortho
+        services.view_uid(v)
         sc.active_view = len(sc.views) - 1
         return {"FINISHED"}
 

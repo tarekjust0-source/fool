@@ -87,7 +87,8 @@ def run_multiview(job: Job, mesh: MeshData, cameras: list[ViewCamera], state: Te
         plan: ViewPlan = plan_view(mesh, cam, state, ps)
         if plan.skip:
             summary["skipped"].append(label)
-            job.emit("view_skipped", {"object": object_name, "view": cam.name, "label": label,
+            job.emit("view_skipped", {"object": object_name, "view": cam.name,
+                                      "view_key": cam.meta.get("key", cam.name), "label": label,
                                       "untextured_fraction": plan.untextured_fraction})
             continue
         purpose = "first_view" if plan.first else "next_view"
@@ -104,7 +105,8 @@ def run_multiview(job: Job, mesh: MeshData, cameras: list[ViewCamera], state: Te
         layer, stats = project_view(mesh, plan, gen, state, ps)
         state.apply_layer(layer)
         job.emit("view_done", {
-            "object": object_name, "view": cam.name, "label": label, "camera": cam.to_dict(),
+            "object": object_name, "view": cam.name, "view_key": cam.meta.get("key", cam.name), "label": label,
+            "camera": cam.to_dict(),
             "state_rgb": state.rgb, "state_alpha": state.alpha,
             "layer": imageio.to_uint8(layer), "stats": stats, "align": info, "purpose": purpose,
             "prompt": cp.as_dict(), "provider": provider.id, "model": result.model, "seed": result.seed,
@@ -118,14 +120,23 @@ def run_multiview(job: Job, mesh: MeshData, cameras: list[ViewCamera], state: Te
         })
         summary["views"].append(label)
     job.check_cancel()
-    fill, fstats = finalize_fill(state, ps)
+    if summary["calls"] == 0:
+        # Nothing was generated: existing low-angle / fill layers stay valid as they are.
+        summary.update({"fallback_fraction": None, "unseen_fraction": None})
+        summary["textured_fraction"] = state.textured_fraction()
+        return summary
+    grazing, fill, fstats = finalize_fill(state, ps)
     summary.update(fstats)
-    if fill is not None:
-        # The fill sits *below* the generated layers, so only untextured texels change.
-        state.rgb = state.rgb * state.alpha[..., None] + fill[..., :3] * (1 - state.alpha[..., None])
-        state.alpha = np.maximum(state.alpha, fill[..., 3])
-        job.emit("fill_done", {"object": object_name, "layer": imageio.to_uint8(fill), "stats": fstats,
-                               "state_rgb": state.rgb, "state_alpha": state.alpha})
+    # Both sit *below* the generated layers, so only still-unpainted texels change.
+    for kind, layer in (("grazing_done", grazing), ("fill_done", fill)):
+        if layer is None:
+            continue
+        top_a = state.alpha[..., None]               # existing paint stays on top
+        has = layer[..., 3:4] > 0
+        state.rgb = np.where(has, state.rgb * top_a + layer[..., :3] * (1 - top_a), state.rgb)
+        state.alpha = np.maximum(state.alpha, layer[..., 3])
+        job.emit(kind, {"object": object_name, "layer": imageio.to_uint8(layer), "stats": fstats,
+                        "state_rgb": state.rgb, "state_alpha": state.alpha})
     summary["textured_fraction"] = state.textured_fraction()
     return summary
 

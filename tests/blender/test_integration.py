@@ -56,6 +56,9 @@ def clean_scene():
     p.provider = "MOCK"
     p.mock.mock_fail_mode = ""
     sc = bpy.context.scene.ats
+    for prop in sc.bl_rna.properties:           # every setting back to its default
+        if prop.identifier != "rna_type" and prop.type != "COLLECTION" and not prop.is_readonly:
+            sc.property_unset(prop.identifier)
     sc.prompt = "weathered dark iron armor with scratches"
     sc.negative = ""
     sc.texture_size = "512"
@@ -438,7 +441,7 @@ def test_occluded_surfaces_are_reported_and_filled():
     res, job = generate(obj)
     assert job.status == "DONE", job.error
     fill = [ly for ly in obj.ats.layers if ly.kind == "FILL"]
-    assert fill and "not AI-generated" in fill[0].info
+    assert fill and "not ai-generated" in fill[0].info.lower()
     res = job.result[obj.name]
     assert res["unseen_fraction"] > 0.05
 
@@ -810,3 +813,122 @@ def test_opening_a_file_during_a_job_does_not_block_future_jobs():
     res, job = generate(obj)
     assert res == {"FINISHED"}, LAST_ERROR[-1:]
     assert job.status == "DONE"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests from the production-readiness audit
+# ---------------------------------------------------------------------------
+
+def _view_layers(obj):
+    return [ly for ly in obj.ats.layers if ly.kind == "VIEW"]
+
+
+def test_regenerate_single_view_repaints_only_that_view():
+    obj = add_cube("Regen")
+    res, job = generate(obj)
+    assert job.status == "DONE"
+    size = obj.ats.texture_size
+    before_rgb, _ = layers_mod.current_texture(obj, size)
+    others_before = {ly.uid: ly.filepath for ly in _view_layers(obj) if ly.name != "Front"}
+    mock = prov_mod.get("MOCK")
+    c = len(mock.calls)
+    bpy.context.scene.ats.prompt = "bright red enamel"
+    res, job = generate(obj, only_view=0)                 # 0 = Front in the default list
+    assert res == {"FINISHED"} and job.status == "DONE", LAST_ERROR[-1:]
+    assert len(mock.calls) == c + 1, "regenerating one view must send exactly one request"
+    fronts = [ly for ly in _view_layers(obj) if ly.name.startswith("Front")]
+    assert len(fronts) == 2 and sum(ly.visible for ly in fronts) == 1, "old Front kept but hidden"
+    for ly in _view_layers(obj):                        # other views untouched
+        if ly.uid in others_before:
+            assert ly.filepath == others_before[ly.uid] and ly.visible
+    after_rgb, _ = layers_mod.current_texture(obj, size)
+    changed = np.abs(after_rgb - before_rgb).max(axis=2) > 0.02
+    assert changed.mean() > 0.05, "the front region must actually be repainted"
+    assert changed.mean() < 0.4, "regeneration must stay local to the front view"
+
+
+def test_new_view_paints_area_previously_only_colour_extended():
+    obj = add_cube("Hidden")
+    sc = bpy.context.scene.ats
+    services.ensure_default_views(sc)
+    for v in sc.views:
+        v.enabled = v.preset == "FRONT"
+    res, job = generate(obj)
+    assert job.status == "DONE"
+    assert any(ly.kind == "FILL" for ly in obj.ats.layers)
+    mock = prov_mod.get("MOCK")
+    c = len(mock.calls)
+    for v in sc.views:
+        v.enabled = v.preset == "BACK"
+    res, job = generate(obj)
+    assert job.status == "DONE"
+    assert len(mock.calls) == c + 1, "colour-extended (non-AI) texels must not block a new view"
+    assert any(ly.name == "Back" for ly in obj.ats.layers)
+
+
+def test_custom_view_records_status_and_debug_images():
+    obj = add_cube("Custom")
+    sc = bpy.context.scene.ats
+    services.ensure_default_views(sc)
+    for v in sc.views:
+        v.enabled = False
+    cam = camlib.ViewCamera("CUSTOM", camlib.look_at((3, -4, 2), (0, 0, 0), (0, 0, 1)),
+                            camlib.perspective(0.7, 1.0, 0.1, 50), 512, 512, False)
+    v = sc.views.add()
+    v.preset = "CUSTOM"
+    v.label = "My angle"
+    v.enabled = True
+    v.custom_view = [float(x) for x in cam.view.reshape(-1)]
+    v.custom_proj = [float(x) for x in cam.proj.reshape(-1)]
+    res, job = generate(obj)
+    assert job.status == "DONE"
+    v = sc.views[len(sc.views) - 1]
+    assert v.status.startswith("done") and v.debug_dir
+
+
+def test_protected_base_layer_is_never_repainted():
+    obj = add_cube("Protect")
+    size = 512
+    obj.ats.texture_size = size
+    storage_mod = __import__(f"{MOD}.blender.storage", fromlist=["x"])
+    storage_mod.ensure_uid(obj)
+    obj.ats.uv_map = "UVMap"
+    base = np.zeros((size, size, 4), np.uint8)
+    base[: size // 2, :, 0] = 255          # top half of the atlas: opaque red, protected
+    base[: size // 2, :, 3] = 255
+    layers_mod.add_layer(obj, base, name="Base", kind="BASE")
+    assert obj.ats.layers[0].protected
+    res, job = generate(obj)
+    assert job.status == "DONE"
+    rgb, a = layers_mod.current_texture(obj, size)
+    covered = layers_mod.covered_mask(obj, size)
+    top = covered.copy()
+    top[size // 2:] = False
+    assert np.allclose(rgb[top][:, 0], 1.0) and np.allclose(rgb[top][:, 1:], 0.0), \
+        "seam blending must not touch protected texels"
+
+
+def test_failed_refinement_leaves_texture_and_material_unchanged():
+    obj = add_cube("RefineFail")
+    generate(obj)
+    size = obj.ats.texture_size
+    before, _ = layers_mod.current_texture(obj, size)
+    mats = [s.material.name for s in obj.material_slots]
+    n = len(obj.ats.layers)
+    obj.data.polygons[0].select = True
+    sc = bpy.context.scene.ats
+    sc.refine_source = "FACES"
+    sc.refine_space = "UV"
+    sc.refine_prompt = "rust"
+    prefs().mock.mock_fail_mode = "network"
+    make_active(obj)
+    try:
+        call(bpy.ops.ats.refine)
+    finally:
+        prefs().mock.mock_fail_mode = ""
+    assert runtime.last_job().status == "FAILED"
+    assert len(obj.ats.layers) == n
+    after, _ = layers_mod.current_texture(obj, size)
+    assert np.array_equal(before, after)
+    assert [s.material.name for s in obj.material_slots] == mats
+    assert obj.ats.history[-1].status == "FAILED"

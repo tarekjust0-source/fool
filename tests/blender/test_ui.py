@@ -146,7 +146,9 @@ def _ui_list_draw(context, obj):
 def setup():
     for o in list(bpy.data.objects):
         bpy.data.objects.remove(o, do_unlink=True)
-    bpy.context.preferences.addons[MOD].preferences.provider = "MOCK"
+    p = bpy.context.preferences.addons[MOD].preferences
+    p.provider = "MOCK"
+    p.mock.mock_fail_mode = ""
     runtime._state["last"] = None
     yield
 

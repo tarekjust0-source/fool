@@ -84,18 +84,29 @@ def ensure_default_views(sc):
             v.preset = key
             v.enabled = on
             v.label = camlib.VIEW_LABELS[key]
+    for v in sc.views:
+        view_uid(v)
+
+
+def view_uid(v) -> str:
+    """Stable key linking a view to the layers it produced."""
+    if not v.uid:
+        v.uid = uuid.uuid4().hex[:8]
+    return v.uid
 
 
 def view_camera(sc, v, mesh: meshdata.MeshData, size: int) -> camlib.ViewCamera:
     if v.preset == "CUSTOM":
         view = np.array(v.custom_view, np.float64).reshape(4, 4)
         proj = np.array(v.custom_proj, np.float64).reshape(4, 4)
-        cam = camlib.ViewCamera("CUSTOM", view, proj, size, size, v.custom_ortho, {"label": v.label or "Custom"})
+        cam = camlib.ViewCamera("CUSTOM", view, proj, size, size, v.custom_ortho,
+                                {"label": v.label or "Custom", "key": view_uid(v)})
         return cam
     basis = mesh.basis if sc.align_to_object else None
     cam = camlib.preset_camera(v.preset, camlib.VIEW_PRESETS[v.preset], mesh.positions, size, basis=basis,
                                ortho=sc.ortho, fov_deg=sc.fov)
     cam.meta["label"] = v.label or camlib.VIEW_LABELS[v.preset]
+    cam.meta["key"] = view_uid(v)
     return cam
 
 
@@ -258,7 +269,7 @@ def apply_material(obj, sc):
 # generation
 # ---------------------------------------------------------------------------
 
-def _prepare_object(context, obj, sc, regenerate: bool):
+def _prepare_object(context, obj, sc, regenerate: bool, exclude_view_key: str = ""):
     validate_object(obj)
     storage.ensure_uid(obj)
     st = obj.ats
@@ -271,11 +282,11 @@ def _prepare_object(context, obj, sc, regenerate: bool):
     if missing:
         raise UserError(f"Layer files missing on disk: {', '.join(missing[:3])}. Delete those layers first.")
     mesh = meshio.extract(obj, context, uv_name=st.uv_map, use_modifiers=sc.use_modifiers)
-    if regenerate or not st.layers:
-        rgb = alpha = None
-    else:
-        rgb, alpha = layers.current_texture(obj, size, include_pending=False)
-    return mesh, size, rgb, alpha
+    if not st.layers:
+        return mesh, size, None, None, None, None
+    # "Start From Scratch" still respects protected layers (imported base, accepted fixes, paint).
+    return (mesh, size) + layers.planning_texture(obj, size, exclude_view_key=exclude_view_key,
+                                                  protected_only=regenerate)
 
 
 def start_generation(context, objects, *, only_view: int | None = None):
@@ -294,10 +305,19 @@ def start_generation(context, objects, *, only_view: int | None = None):
     job.context["history"] = {}
     job.context["keep_debug"] = p.keep_debug_views
     job.context["view_index"] = {}
+    job.context["replace_key"] = ""
+    job.context["created"] = set()
     total_calls = 0
+    ensure_default_views(sc)
+    replace_key = ""
+    if only_view is not None and sc.mode == "MULTIVIEW" and 0 <= only_view < len(sc.views):
+        # Regenerate one view: its previous layers are ignored while planning,
+        # so it repaints exactly what it painted before, with the other views as context.
+        replace_key = view_uid(sc.views[only_view])
+        job.context["replace_key"] = replace_key
     for obj in objects:
-        mesh, size, rgb, alpha = _prepare_object(context, obj, sc, sc.regenerate)
-        state = TextureState(mesh, size, rgb, alpha)
+        mesh, size, rgb, alpha, protected, grazing = _prepare_object(context, obj, sc, sc.regenerate, replace_key)
+        state = TextureState(mesh, size, rgb, alpha, protected, grazing)
         if state.uv.index.size == 0:
             raise UserError(f"'{obj.name}': UV map '{mesh.uv_name}' covers no area inside 0-1.")
         cams = enabled_cameras(sc, mesh, int(sc.view_size), only_view) if sc.mode == "MULTIVIEW" else []
@@ -306,7 +326,7 @@ def start_generation(context, objects, *, only_view: int | None = None):
         key = obj.name
         job.context["out_dirs"][key] = storage.object_dir(obj)
         job.context["objects"][key] = obj.ats.uid
-        job.context["view_index"][key] = {cam.name if cam.name != "CUSTOM" else f"CUSTOM{i}": i for i, cam in cams}
+        job.context["view_index"][key] = {cam.meta["key"]: i for i, cam in cams}
         detail = f"{sc.mode.lower()} | {len(cams)} views | {size}px | style {sc.style}"
         job.context["history"][key] = add_history(obj, "Generate" if sc.mode == "MULTIVIEW" else "Tile",
                                                   sc.prompt, sc.negative, prov.id, cfg.model, detail)
@@ -354,11 +374,11 @@ def _obj_for(job, payload):
 def _on_generation_event(job, kind, payload):
     sc = bpy.context.scene.ats
     if kind == "view_skipped":
-        idx = job.context["view_index"].get(payload["object"], {}).get(payload["view"])
+        idx = job.context["view_index"].get(payload["object"], {}).get(payload.get("view_key"))
         if idx is not None and idx < len(sc.views):
             sc.views[idx].status = f"skipped ({payload['untextured_fraction']:.1%} new)"
         return
-    if kind not in ("view_done", "fill_done", "tile_done"):
+    if kind not in ("view_done", "grazing_done", "fill_done", "tile_done"):
         return
     obj = _obj_for(job, payload)
     key = payload["object"]
@@ -366,35 +386,49 @@ def _on_generation_event(job, kind, payload):
         layers.push_undo(obj, "Generate")
         job.context["first_layer_done"].add(key)
     hist = job.context["history"].get(key, "")
+    view_key = payload.get("view_key", "") if kind == "view_done" else ""
+    st = payload.get("stats", {})
     if kind == "view_done":
         name = f"{payload['label']}"
         kind_l = "VIEW"
-        st = payload.get("stats", {})
-        info = f"{payload['provider']} {payload.get('model', '')} | claimed {st.get('claimed_fraction', 0):.1%}"
+        info = (f"AI-generated ({payload['provider']} {payload.get('model', '')}); "
+                f"claimed {st.get('claimed_fraction', 0):.1%} of the surface")
+        if view_key and view_key == job.context.get("replace_key"):
+            older = [ly for ly in obj.ats.layers if ly.view_key == view_key and ly.kind == "VIEW"]
+            for ly in older:          # keep for comparison / undo, but hide
+                ly.visible = False
+                if not ly.name.endswith("(previous)"):
+                    ly.name = f"{ly.name} (previous)"
+            name = f"{payload['label']} v{len(older) + 1}"
+    elif kind == "grazing_done":
+        name = "Low-angle views"
+        kind_l = "GRAZING"
+        info = (f"AI-generated but seen only at flat angles ({st.get('fallback_fraction', 0):.1%} of the surface); "
+                "a better view will repaint these texels")
     elif kind == "fill_done":
         name = "Hidden-area fill"
         kind_l = "FILL"
-        st = payload.get("stats", {})
-        info = (f"Grazing-angle fallback {st.get('fallback_fraction', 0):.1%}, colour-extended "
-                f"{st.get('unseen_fraction', 0):.1%} (not AI-generated)")
+        info = (f"NOT AI-generated: colour extended from the nearest painted surface into "
+                f"{st.get('unseen_fraction', 0):.1%} of the surface that no camera saw")
     else:
         name = "Tileable material"
         kind_l = "TILE"
-        info = f"{payload['provider']} {payload.get('model', '')}"
-    index = 0 if kind == "fill_done" else None
+        info = f"AI-generated swatch ({payload['provider']} {payload.get('model', '')})"
+    index = 0 if kind in ("grazing_done", "fill_done") else None
     ly = layers.add_layer(obj, None, name=name, kind=kind_l, info=info, filepath=payload["layer_path"],
-                          history_uid=hist, index=index, push=False)
-    if kind == "fill_done":
+                          history_uid=hist, index=index, push=False, view_key=view_key)
+    job.context["created"].add(ly.uid)
+    if index is not None:
         # keep the user's active selection on the newest generated layer
         obj.ats.active_layer = len(obj.ats.layers) - 1
-    if hist and kind != "fill_done":
+    if hist and kind not in ("grazing_done", "fill_done"):
         h = update_history(obj, hist)
         if h is not None:
             h.layer_uid = ly.uid
             h.filepath = ly.filepath
             h.layer_name = ly.name
     if kind == "view_done":
-        idx = job.context["view_index"].get(key, {}).get(payload["view"])
+        idx = job.context["view_index"].get(key, {}).get(view_key)
         if idx is not None and idx < len(sc.views):
             v = sc.views[idx]
             v.status = f"done ({payload['stats'].get('claimed_fraction', 0):.0%} of surface)"
@@ -411,6 +445,21 @@ def _on_generation_event(job, kind, payload):
         wired.add(key)
 
 
+def _drop_superseded_fills(obj, created: set):
+    """After a successful multi-view run, older low-angle / fill layers are obsolete.
+
+    The run planned without them and produced its own for every texel that is
+    still unpainted, so keeping them would only stack stale colour extensions.
+    (The removal is part of the run's undo step.)
+    """
+    st = obj.ats
+    for i in reversed(range(len(st.layers))):
+        ly = st.layers[i]
+        if ly.kind in ("GRAZING", "FILL") and ly.uid not in created:
+            st.layers.remove(i)
+    st.active_layer = min(st.active_layer, max(0, len(st.layers) - 1))
+
+
 def _on_generation_finished(job):
     sc = bpy.context.scene.ats
     for key, hist_uid in job.context.get("history", {}).items():
@@ -421,9 +470,12 @@ def _on_generation_finished(job):
         if job.status == "DONE":
             detail = ""
             if isinstance(res, dict) and "views" in res:
-                detail = (f"views: {', '.join(res['views']) or 'none'}; skipped: {', '.join(res['skipped']) or 'none'}; "
-                          f"hidden {res.get('unseen_fraction', 0):.1%}")
+                hidden = res.get("unseen_fraction")
+                detail = (f"views: {', '.join(res['views']) or 'none'}; skipped: {', '.join(res['skipped']) or 'none'}"
+                          + (f"; colour-extended (not AI) {hidden:.1%}" if hidden is not None else ""))
             update_history(obj, hist_uid, status="DONE", detail=detail)
+            if isinstance(res, dict) and res.get("calls"):
+                _drop_superseded_fills(obj, job.context["created"])
         else:
             update_history(obj, hist_uid, status=job.status, detail=job.error or job.message)
         if obj.ats.layers:
